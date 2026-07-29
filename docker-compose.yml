@@ -1,0 +1,13 @@
+services:
+  pindou:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      # 生产部署务必改成强密码和固定密钥
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      JWT_SECRET: ${JWT_SECRET:-}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

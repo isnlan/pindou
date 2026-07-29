@@ -7,4 +7,9 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
+  server: {
+    proxy: {
+      "/api": "http://localhost:3000",
+    },
+  },
 });
