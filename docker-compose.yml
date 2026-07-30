@@ -2,7 +2,7 @@ services:
   pindou:
     build: .
     ports:
-      - "3000:3000"
+      - "3001:3000"
     environment:
       # 生产部署务必改成强密码和固定密钥
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
