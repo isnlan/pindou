@@ -112,6 +112,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
   const setShowGrid = useEditorStore((state) => state.setShowGrid);
   const setActiveColorId = useEditorStore((state) => state.setActiveColorId);
   const setMaxColorCount = useEditorStore((state) => state.setMaxColorCount);
+  const limitedPaletteIds = useEditorStore((state) => state.limitedPaletteIds);
   const togglePaletteColor = useEditorStore((state) => state.togglePaletteColor);
   const enableAllPaletteColors = useEditorStore((state) => state.enableAllPaletteColors);
   const disableAllPaletteColors = useEditorStore((state) => state.disableAllPaletteColors);
@@ -1143,7 +1144,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
                     {activeColor.id} {activeColor.name}
                   </strong>
                   <p>
-                    已启用 {enabledPaletteIds.length}/{defaultPalette.length}
+                    已启用 {enabledPaletteIds.length}/{defaultPalette.length}{limitedPaletteIds ? ` · 已选 ${limitedPaletteIds.length} 色` : ""}
                   </p>
                 </div>
               </div>
@@ -1154,13 +1155,14 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
                   .map((color) => {
                     const enabled = enabledPaletteIds.includes(color.id);
                     const active = color.id === activeColorId;
+                    const limitedExcluded = limitedPaletteIds !== null && enabled && !limitedPaletteIds.includes(color.id);
 
                     return (
                       <button
                         key={color.id}
                         className={`palette-swatch palette-swatch--dense palette-swatch--sidebar${
                           active ? " palette-chip--active" : ""
-                        }${enabled ? "" : " palette-chip--disabled"}`}
+                        }${enabled ? "" : " palette-chip--disabled"}${limitedExcluded ? " palette-chip--limited-excluded" : ""}`}
                         aria-label={`${color.id} ${color.name}`}
                         onClick={() => {
                           if (!enabled) {

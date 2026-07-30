@@ -41,6 +41,7 @@ type SelectionClipboard = {
 };
 
 type EditorStoreState = ProjectState & {
+  limitedPaletteIds: string[] | null;
   selectionClipboard: SelectionClipboard | null;
   undoStack: HistoryEntry[];
   redoStack: HistoryEntry[];
@@ -350,11 +351,11 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       if (processing.maxColorCount === state.processing.maxColorCount) {
         return state;
       }
-
-      return mergePersistedState(
+return mergePersistedState(
         persistProjectState({
           ...state,
           processing,
+          limitedPaletteIds: null,
         }),
         state,
       );
@@ -449,13 +450,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     const requestId = ++generationRequestSequence;
 
-    const beadGrid = await generateBeadGrid({
+    const beadGridResult = await generateBeadGrid({
       canvas: state.canvas,
       sourceImage: state.sourceImage,
       imageTransform: state.imageTransform,
       enabledPaletteIds: state.enabledPaletteIds,
       maxColorCount: state.processing.maxColorCount,
     });
+    const beadGrid = beadGridResult.beadGrid;
+    const limitedPaletteIds = beadGridResult.limitedPaletteIds;
 
     if (requestId !== generationRequestSequence) {
       return;
@@ -480,11 +483,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             ...currentState,
             beadGrid,
             canvas: state.canvas,
+            limitedPaletteIds,
           }
-        : pushHistoryState(currentState, {
-            beadGrid,
-            canvas: state.canvas,
-          });
+        : {
+            ...pushHistoryState(currentState, {
+              beadGrid,
+              canvas: state.canvas,
+            }),
+            limitedPaletteIds,
+          };
       const persistedState = persistProjectState(nextState);
 
       lastGenerationHistoryGroupId = historyGroupId;
@@ -1222,6 +1229,7 @@ function buildFreshEditorState(overrides?: Partial<ProjectState>): EditorStoreSt
     processing: nextProcessing,
     enabledPaletteIds: nextEnabledPaletteIds,
     activeColorId: nextActiveColorId,
+    limitedPaletteIds: null,
     selectionClipboard: null,
     undoStack: [],
     redoStack: [],
@@ -1275,6 +1283,7 @@ function deserializeProjectFile(projectFile: SerializedProjectFile): EditorStore
         }
       : null,
     currentSelection: project.currentSelection ?? null,
+    limitedPaletteIds: null,
     enabledPaletteIds: normalizeEnabledPaletteIds(project.enabledPaletteIds),
     activeColorId: project.activeColorId,
     selectionClipboard: null,

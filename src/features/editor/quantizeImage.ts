@@ -65,7 +65,17 @@ export async function generateBeadGrid(options: {
     options.maxColorCount,
   );
 
-  return quantizeNearest(normalizedSampledGrid, limitedPaletteIndices);
+  type GenerateBeadGridResult = {
+    beadGrid: BeadGrid;
+    limitedPaletteIds: string[];
+  };
+
+  return {
+    beadGrid: quantizeNearest(normalizedSampledGrid, limitedPaletteIndices),
+    limitedPaletteIds: limitedPaletteIndices.map(
+      (index) => defaultPalette[index].id,
+    ),
+  } satisfies GenerateBeadGridResult;
 }
 
 export async function generatePreviewBeadGrid(options: {
@@ -75,9 +85,11 @@ export async function generatePreviewBeadGrid(options: {
   enabledPaletteIds: string[];
   maxColorCount: number | null;
 }) {
-  return generateBeadGrid({
+  const { beadGrid } = await generateBeadGrid({
     ...options,
   });
+
+  return beadGrid;
 }
 
 export function buildColorStats(beadGrid: BeadGrid | null) {
