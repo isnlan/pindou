@@ -65,6 +65,10 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
     repeatIntervalId: null,
     suppressClick: false,
   });
+  const colorCountDebounceRef = useRef<number | null>(null);
+  const colorCountGroupResetRef = useRef<number | null>(null);
+  const colorCountHistoryGroupRef = useRef<string | null>(null);
+  const colorCountHistorySequenceRef = useRef(0);
   const [replaceFromColorId, setReplaceFromColorId] = useState<string>(defaultPalette[0].id);
   const [replaceToColorId, setReplaceToColorId] = useState<string>(defaultPalette[2].id);
   const [replaceSelectionSlot, setReplaceSelectionSlot] = useState<"from" | "to" | null>(null);
@@ -107,6 +111,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
   const setTool = useEditorStore((state) => state.setTool);
   const setShowGrid = useEditorStore((state) => state.setShowGrid);
   const setActiveColorId = useEditorStore((state) => state.setActiveColorId);
+  const setMaxColorCount = useEditorStore((state) => state.setMaxColorCount);
   const togglePaletteColor = useEditorStore((state) => state.togglePaletteColor);
   const enableAllPaletteColors = useEditorStore((state) => state.enableAllPaletteColors);
   const disableAllPaletteColors = useEditorStore((state) => state.disableAllPaletteColors);
@@ -151,6 +156,12 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
       }
       if (holdState.repeatIntervalId !== null) {
         window.clearInterval(holdState.repeatIntervalId);
+      }
+      if (colorCountDebounceRef.current !== null) {
+        window.clearTimeout(colorCountDebounceRef.current);
+      }
+      if (colorCountGroupResetRef.current !== null) {
+        window.clearTimeout(colorCountGroupResetRef.current);
       }
     },
     [],
@@ -198,6 +209,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
       sourceImage,
       imageTransform,
       enabledPaletteIds,
+      maxColorCount: processing.maxColorCount,
     })
       .then((grid) => {
         if (!cancelled) {
@@ -217,6 +229,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
     canvas,
     enabledPaletteIds,
     imageTransform,
+    processing.maxColorCount,
     sourceImage,
     livePreviewEnabled,
   ]);
@@ -320,6 +333,15 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
   const colorStats = useMemo(() => buildColorStats(beadGrid), [beadGrid]);
   const saveLabel = lastSavedAt ? formatSavedAt(lastSavedAt) : "未保存";
   const usedColorCount = countUsedColors(beadGrid);
+  const enabledColorCount = Math.max(1, enabledPaletteIds.length);
+  const colorCountValue = Math.min(
+    processing.maxColorCount ?? enabledColorCount,
+    enabledColorCount,
+  );
+  const colorCountLabel =
+    processing.maxColorCount === null
+      ? `${enabledColorCount} 色（不限色）`
+      : `${colorCountValue} 色`;
   const selectionInfo = currentSelection ? getSelectionInfo(currentSelection) : null;
   const showSelectionActions = Boolean(currentSelection);
   const exportBaseName = `pindou-${canvas.width}x${canvas.height}`;
@@ -387,6 +409,70 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
       commitCanvasSize(dimension, event.currentTarget.value);
       event.currentTarget.blur();
     }
+  }
+
+  function handleMaxColorCountChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const selectedColorCount = Math.max(
+      1,
+      Math.min(enabledColorCount, Math.round(Number(event.target.value))),
+    );
+    const nextMaxColorCount =
+      selectedColorCount >= enabledColorCount ? null : selectedColorCount;
+
+    setMaxColorCount(nextMaxColorCount);
+
+    if (!sourceImage?.src) {
+      return;
+    }
+
+    if (!colorCountHistoryGroupRef.current) {
+      colorCountHistorySequenceRef.current += 1;
+      colorCountHistoryGroupRef.current = `color-count-${Date.now()}-${colorCountHistorySequenceRef.current}`;
+    }
+
+    const historyGroupId = colorCountHistoryGroupRef.current;
+
+    if (colorCountDebounceRef.current !== null) {
+      window.clearTimeout(colorCountDebounceRef.current);
+    }
+    if (colorCountGroupResetRef.current !== null) {
+      window.clearTimeout(colorCountGroupResetRef.current);
+    }
+
+    colorCountDebounceRef.current = window.setTimeout(() => {
+      colorCountDebounceRef.current = null;
+      void generatePattern({ historyGroupId }).catch((error) => {
+        notifyError(
+          "自动限色失败",
+          error instanceof Error ? error.message : "无法重新生成图纸",
+        );
+      });
+    }, 200);
+    colorCountGroupResetRef.current = window.setTimeout(() => {
+      colorCountGroupResetRef.current = null;
+      if (colorCountHistoryGroupRef.current === historyGroupId) {
+        colorCountHistoryGroupRef.current = null;
+      }
+    }, 700);
+  }
+
+  function handleGeneratePattern() {
+    if (colorCountDebounceRef.current !== null) {
+      window.clearTimeout(colorCountDebounceRef.current);
+      colorCountDebounceRef.current = null;
+    }
+    if (colorCountGroupResetRef.current !== null) {
+      window.clearTimeout(colorCountGroupResetRef.current);
+      colorCountGroupResetRef.current = null;
+    }
+    colorCountHistoryGroupRef.current = null;
+
+    void generatePattern().catch((error) => {
+      notifyError(
+        "图纸生成失败",
+        error instanceof Error ? error.message : "无法生成图纸",
+      );
+    });
   }
 
   function handleExportJson() {
@@ -652,9 +738,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
                 <div className="stack-actions">
                   <Button
                     disabled={Boolean(generationReason)}
-                    onClick={() => {
-                      void generatePattern();
-                    }}
+                    onClick={handleGeneratePattern}
                     size="compact"
                     tone="editor"
                     variant="primary"
@@ -747,6 +831,26 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
                   </Button>
                 </div>
               </div>
+              <label className="color-count-control">
+                <span className="color-count-control__head">
+                  <span>颜色数量</span>
+                  <strong>{colorCountLabel}</strong>
+                </span>
+                <input
+                  aria-label="颜色数量"
+                  className="field__range"
+                  disabled={enabledColorCount <= 1}
+                  max={enabledColorCount}
+                  min={1}
+                  onChange={handleMaxColorCountChange}
+                  step={1}
+                  type="range"
+                  value={colorCountValue}
+                />
+                <span className="color-count-control__hint">
+                  从已启用颜色中自动限色，实际结果可能更少。
+                </span>
+              </label>
             </PanelCard>
 
           </div>
@@ -1941,4 +2045,3 @@ function downloadUrl(filename: string, url: string) {
   link.download = filename;
   link.click();
 }
-

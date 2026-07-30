@@ -3,6 +3,7 @@ import type {
   BeadGrid,
   CanvasSize,
   EditorTool,
+  ProcessingSettings,
   ProjectState,
   RectSelection,
   SerializedProjectFile,
@@ -20,6 +21,7 @@ import {
 } from "../palette/palette";
 import {
   generateBeadGrid,
+  normalizeProcessingSettings,
   replaceEdgeColor,
   trimBeadGrid,
 } from "./quantizeImage";
@@ -62,13 +64,14 @@ type EditorStore = EditorStoreState & {
   setTool: (tool: EditorTool) => void;
   setShowGrid: (showGrid: boolean) => void;
   setActiveColorId: (colorId: string) => void;
+  setMaxColorCount: (maxColorCount: number | null) => void;
   togglePaletteColor: (colorId: string) => void;
   enableAllPaletteColors: () => void;
   disableAllPaletteColors: () => void;
   resetPaletteSelection: () => void;
   createNewProject: (options?: { name?: string; canvas?: CanvasSize }) => void;
   importProjectFile: (projectFile: SerializedProjectFile) => void;
-  generatePattern: () => Promise<void>;
+  generatePattern: (options?: GeneratePatternOptions) => Promise<void>;
   trimToDrawing: () => void;
   wrapDrawingWithPadding: (padding: number) => void;
   paintCell: (x: number, y: number) => void;
@@ -98,9 +101,16 @@ type LegacyStoredProjectLibrary = {
   projects: LegacyStoredProjectRecord[];
 };
 
+type GeneratePatternOptions = {
+  historyGroupId?: string;
+};
+
 const STORAGE_KEY = "pindou.editor.document.v1";
 const LEGACY_STORAGE_KEY = "pindou.editor.library.v1";
 let hasShownStorageQuotaNotice = false;
+let generationRequestSequence = 0;
+let lastGenerationHistoryGroupId: string | null = null;
+let lastGenerationUndoStack: HistoryEntry[] | null = null;
 
 const defaultViewTransform: ViewTransform = {
   scale: 1,
@@ -122,7 +132,9 @@ const initialState: ProjectState = {
   currentSelection: null,
   imageTransform: defaultViewTransform,
   stageViewport: defaultViewTransform,
-  processing: {},
+  processing: {
+    maxColorCount: null,
+  },
   enabledPaletteIds: [...defaultPaletteIds],
   activeTool: "paint",
   activeColorId: defaultPalette.find((color) => color.id === "R02")?.id ?? defaultPalette[2].id,
@@ -328,6 +340,25 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         state,
       );
     }),
+  setMaxColorCount: (maxColorCount) =>
+    set((state) => {
+      const processing = clampProcessingToPalette(
+        normalizeProcessingSettings({ maxColorCount }),
+        state.enabledPaletteIds.length,
+      );
+
+      if (processing.maxColorCount === state.processing.maxColorCount) {
+        return state;
+      }
+
+      return mergePersistedState(
+        persistProjectState({
+          ...state,
+          processing,
+        }),
+        state,
+      );
+    }),
   togglePaletteColor: (colorId) =>
     set((state) => {
       const normalized = normalizeEnabledPaletteIds(state.enabledPaletteIds);
@@ -348,6 +379,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         persistProjectState({
           ...state,
           enabledPaletteIds: nextEnabledPaletteIds,
+          processing: clampProcessingToPalette(
+            state.processing,
+            nextEnabledPaletteIds.length,
+          ),
           activeColorId: nextActiveColorId,
           currentSelection: null,
         }),
@@ -360,6 +395,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         persistProjectState({
           ...state,
           enabledPaletteIds: [...defaultPaletteIds],
+          processing: clampProcessingToPalette(
+            state.processing,
+            defaultPaletteIds.length,
+          ),
         }),
         state,
       ),
@@ -370,6 +409,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         persistProjectState({
           ...state,
           enabledPaletteIds: [state.activeColorId],
+          processing: clampProcessingToPalette(state.processing, 1),
         }),
         state,
       ),
@@ -380,6 +420,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         persistProjectState({
           ...state,
           enabledPaletteIds: [...defaultPaletteIds],
+          processing: clampProcessingToPalette(
+            state.processing,
+            defaultPaletteIds.length,
+          ),
           activeColorId: state.activeColorId || defaultPaletteIds[0],
           currentSelection: null,
         }),
@@ -396,28 +440,58 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }),
   importProjectFile: (projectFile) =>
     set(() => persistProjectState(deserializeProjectFile(projectFile))),
-  generatePattern: async () => {
+  generatePattern: async (options) => {
     const state = get();
 
     if (!state.sourceImage) {
       return;
     }
 
+    const requestId = ++generationRequestSequence;
+
     const beadGrid = await generateBeadGrid({
       canvas: state.canvas,
       sourceImage: state.sourceImage,
       imageTransform: state.imageTransform,
       enabledPaletteIds: state.enabledPaletteIds,
+      maxColorCount: state.processing.maxColorCount,
     });
 
-    set((currentState) =>
-      persistProjectState(
-        pushHistoryState(currentState, {
-          beadGrid,
-          canvas: state.canvas,
-        }),
-      ),
-    );
+    if (requestId !== generationRequestSequence) {
+      return;
+    }
+
+    set((currentState) => {
+      if (
+        requestId !== generationRequestSequence ||
+        !generationInputsMatch(currentState, state)
+      ) {
+        return currentState;
+      }
+
+      const historyGroupId = options?.historyGroupId ?? null;
+      const canReuseHistoryEntry = Boolean(
+        historyGroupId &&
+          historyGroupId === lastGenerationHistoryGroupId &&
+          currentState.undoStack === lastGenerationUndoStack,
+      );
+      const nextState = canReuseHistoryEntry
+        ? {
+            ...currentState,
+            beadGrid,
+            canvas: state.canvas,
+          }
+        : pushHistoryState(currentState, {
+            beadGrid,
+            canvas: state.canvas,
+          });
+      const persistedState = persistProjectState(nextState);
+
+      lastGenerationHistoryGroupId = historyGroupId;
+      lastGenerationUndoStack = historyGroupId ? persistedState.undoStack : null;
+
+      return persistedState;
+    });
   },
   trimToDrawing: () =>
     set((state) => {
@@ -995,6 +1069,39 @@ function pushHistoryState(
   };
 }
 
+function generationInputsMatch(currentState: EditorStoreState, capturedState: EditorStoreState) {
+  return (
+    currentState.undoStack === capturedState.undoStack &&
+    currentState.sourceImage === capturedState.sourceImage &&
+    currentState.canvas.width === capturedState.canvas.width &&
+    currentState.canvas.height === capturedState.canvas.height &&
+    currentState.imageTransform.scale === capturedState.imageTransform.scale &&
+    currentState.imageTransform.offsetX === capturedState.imageTransform.offsetX &&
+    currentState.imageTransform.offsetY === capturedState.imageTransform.offsetY &&
+    currentState.processing.maxColorCount === capturedState.processing.maxColorCount &&
+    currentState.enabledPaletteIds.length === capturedState.enabledPaletteIds.length &&
+    currentState.enabledPaletteIds.every(
+      (colorId, index) => colorId === capturedState.enabledPaletteIds[index],
+    )
+  );
+}
+
+function clampProcessingToPalette(
+  processing: ProcessingSettings,
+  enabledPaletteCount: number,
+): ProcessingSettings {
+  if (processing.maxColorCount === null) {
+    return processing;
+  }
+
+  return {
+    maxColorCount: Math.min(
+      Math.max(1, enabledPaletteCount),
+      processing.maxColorCount,
+    ),
+  };
+}
+
 function snapshotState(
   state: Pick<EditorStoreState, "beadGrid" | "canvas" | "currentSelection" | "stageViewport">,
 ): HistoryEntry {
@@ -1098,6 +1205,10 @@ function createProjectName() {
 
 function buildFreshEditorState(overrides?: Partial<ProjectState>): EditorStoreState {
   const nextEnabledPaletteIds = normalizeEnabledPaletteIds(overrides?.enabledPaletteIds);
+  const nextProcessing = clampProcessingToPalette(
+    normalizeProcessingSettings(overrides?.processing),
+    nextEnabledPaletteIds.length,
+  );
   const nextActiveColorId =
     overrides?.activeColorId && nextEnabledPaletteIds.includes(overrides.activeColorId)
       ? overrides.activeColorId
@@ -1108,6 +1219,7 @@ function buildFreshEditorState(overrides?: Partial<ProjectState>): EditorStoreSt
     ...overrides,
     name: sanitizeProjectName(overrides?.name ?? initialState.name),
     canvas: sanitizeCanvasSize(overrides?.canvas ?? initialState.canvas),
+    processing: nextProcessing,
     enabledPaletteIds: nextEnabledPaletteIds,
     activeColorId: nextActiveColorId,
     selectionClipboard: null,
@@ -1176,6 +1288,10 @@ function deserializeProjectFile(projectFile: SerializedProjectFile): EditorStore
 
 function normalizeSerializedProject(project: SerializedProjectFile["project"]) {
   const enabledPaletteIds = normalizeEnabledPaletteIds(project.enabledPaletteIds);
+  const processing = clampProcessingToPalette(
+    normalizeProcessingSettings(project.processing),
+    enabledPaletteIds.length,
+  );
   const activeColorId = enabledPaletteIds.includes(project.activeColorId)
     ? project.activeColorId
     : enabledPaletteIds[0] ?? findPaletteColorById(defaultPalette[0].id).id;
@@ -1186,6 +1302,7 @@ function normalizeSerializedProject(project: SerializedProjectFile["project"]) {
     canvas: sanitizeCanvasSize(project.canvas),
     sourceImage: deserializeSourceImage(project.sourceImage),
     currentSelection: project.currentSelection ?? null,
+    processing,
     enabledPaletteIds,
     activeColorId,
   };
@@ -1514,5 +1631,3 @@ function blitGrid(target: BeadGrid, source: BeadGrid, offsetX: number, offsetY: 
     }
   }
 }
-
-

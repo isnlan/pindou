@@ -1,6 +1,7 @@
 import type {
   BeadGrid,
   CanvasSize,
+  ProcessingSettings,
   RectSelection,
   SerializedProjectFile,
   SourceImage,
@@ -36,6 +37,7 @@ export async function generateBeadGrid(options: {
   sourceImage: SourceImage;
   imageTransform: ViewTransform;
   enabledPaletteIds: string[];
+  maxColorCount: number | null;
 }) {
   const image = await loadImage(options.sourceImage.src);
   const sampleSurface = renderSourceToSampleSurface({
@@ -57,8 +59,13 @@ export async function generateBeadGrid(options: {
     imageData: sampleSurface.imageData,
   });
   const normalizedSampledGrid = stripConnectedNearWhiteBackground(sampledGrid);
+  const limitedPaletteIndices = selectLimitedPaletteIndices(
+    normalizedSampledGrid,
+    enabledPaletteIndices,
+    options.maxColorCount,
+  );
 
-  return quantizeNearest(normalizedSampledGrid, enabledPaletteIndices);
+  return quantizeNearest(normalizedSampledGrid, limitedPaletteIndices);
 }
 
 export async function generatePreviewBeadGrid(options: {
@@ -66,6 +73,7 @@ export async function generatePreviewBeadGrid(options: {
   sourceImage: SourceImage;
   imageTransform: ViewTransform;
   enabledPaletteIds: string[];
+  maxColorCount: number | null;
 }) {
   return generateBeadGrid({
     ...options,
@@ -145,8 +153,7 @@ export function exportProjectJson(options: {
   canvas: CanvasSize;
   currentSelection: RectSelection | null;
   name: string;
-  processing: {
-  };
+  processing: ProcessingSettings;
   sourceImage: SourceImage | null;
   imageTransform: ViewTransform;
   stageViewport: ViewTransform;
@@ -213,10 +220,30 @@ export function parseProjectJson(raw: string): SerializedProjectFile {
         enabledPaletteIds.includes(projectFile.project.activeColorId ?? "")
           ? projectFile.project.activeColorId ?? defaultPaletteIds[0]
           : enabledPaletteIds[0],
-      processing: {
-      },
+      processing: normalizeProcessingSettings(projectFile.project.processing),
     },
   } as SerializedProjectFile;
+}
+
+export function normalizeProcessingSettings(
+  processing?: Partial<ProcessingSettings> | null,
+): ProcessingSettings {
+  const maxColorCount = processing?.maxColorCount;
+
+  if (maxColorCount === null || maxColorCount === undefined) {
+    return { maxColorCount: null };
+  }
+
+  if (!Number.isFinite(maxColorCount)) {
+    return { maxColorCount: null };
+  }
+
+  return {
+    maxColorCount: Math.min(
+      defaultPalette.length,
+      Math.max(1, Math.round(maxColorCount)),
+    ),
+  };
 }
 
 export function exportStagePng(beadGrid: BeadGrid | null) {
@@ -1418,6 +1445,102 @@ function quantizeNearest(
     height: sampledGrid.height,
     cells,
   };
+}
+
+function selectLimitedPaletteIndices(
+  sampledGrid: {
+    width: number;
+    height: number;
+    samples: Array<{ r: number; g: number; b: number; a: number } | null>;
+  },
+  enabledPaletteIndices: number[],
+  maxColorCount: number | null,
+) {
+  if (maxColorCount === null || maxColorCount >= enabledPaletteIndices.length) {
+    return enabledPaletteIndices;
+  }
+
+  const targetColorCount = Math.max(1, Math.round(maxColorCount));
+  const usageCounts = new Map<number, number>();
+
+  for (const sample of sampledGrid.samples) {
+    if (!sample) {
+      continue;
+    }
+
+    const paletteIndex = findNearestPaletteIndex(
+      sample.r,
+      sample.g,
+      sample.b,
+      enabledPaletteIndices,
+    );
+    usageCounts.set(paletteIndex, (usageCounts.get(paletteIndex) ?? 0) + 1);
+  }
+
+  const selectedPaletteIndices = Array.from(usageCounts.keys()).sort(
+    (left, right) => left - right,
+  );
+
+  if (selectedPaletteIndices.length <= targetColorCount) {
+    return enabledPaletteIndices;
+  }
+
+  while (selectedPaletteIndices.length > targetColorCount) {
+    let removalPosition = 0;
+    let mergeTargetIndex = selectedPaletteIndices[1];
+    let lowestRemovalCost = Number.POSITIVE_INFINITY;
+
+    for (let position = 0; position < selectedPaletteIndices.length; position += 1) {
+      const paletteIndex = selectedPaletteIndices[position];
+      let nearestIndex = selectedPaletteIndices[position === 0 ? 1 : 0];
+      let nearestDistance = paletteDistanceSquared(paletteIndex, nearestIndex);
+
+      for (const candidateIndex of selectedPaletteIndices) {
+        if (candidateIndex === paletteIndex) {
+          continue;
+        }
+
+        const distance = paletteDistanceSquared(paletteIndex, candidateIndex);
+        if (
+          distance < nearestDistance ||
+          (distance === nearestDistance && candidateIndex < nearestIndex)
+        ) {
+          nearestDistance = distance;
+          nearestIndex = candidateIndex;
+        }
+      }
+
+      const removalCost = (usageCounts.get(paletteIndex) ?? 0) * nearestDistance;
+      if (
+        removalCost < lowestRemovalCost ||
+        (removalCost === lowestRemovalCost && paletteIndex > selectedPaletteIndices[removalPosition])
+      ) {
+        lowestRemovalCost = removalCost;
+        removalPosition = position;
+        mergeTargetIndex = nearestIndex;
+      }
+    }
+
+    const removedPaletteIndex = selectedPaletteIndices[removalPosition];
+    usageCounts.set(
+      mergeTargetIndex,
+      (usageCounts.get(mergeTargetIndex) ?? 0) + (usageCounts.get(removedPaletteIndex) ?? 0),
+    );
+    usageCounts.delete(removedPaletteIndex);
+    selectedPaletteIndices.splice(removalPosition, 1);
+  }
+
+  return selectedPaletteIndices;
+}
+
+function paletteDistanceSquared(leftIndex: number, rightIndex: number) {
+  const left = defaultPalette[leftIndex];
+  const right = defaultPalette[rightIndex];
+  const deltaR = left.rgb[0] - right.rgb[0];
+  const deltaG = left.rgb[1] - right.rgb[1];
+  const deltaB = left.rgb[2] - right.rgb[2];
+
+  return deltaR * deltaR + deltaG * deltaG + deltaB * deltaB;
 }
 
 function findNearestPaletteIndex(

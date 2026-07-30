@@ -2178,6 +2178,37 @@ textarea:focus-visible {
   min-width: 42px;
 }
 
+.color-count-control {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px;
+  border: 1px solid var(--theme-border-soft);
+  border-radius: 8px;
+  background: var(--theme-bg-surface-muted);
+}
+
+.color-count-control__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  color: var(--theme-text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+.color-count-control__head strong {
+  color: var(--theme-text-primary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.color-count-control__hint {
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
 .image-preview {
   width: 100%;
   overflow: hidden;

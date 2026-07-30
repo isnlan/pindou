@@ -54,6 +54,7 @@ export type SerializedSourceImage = {
 };
 
 export type ProcessingSettings = {
+  maxColorCount: number | null;
 };
 
 export type ProjectState = {
