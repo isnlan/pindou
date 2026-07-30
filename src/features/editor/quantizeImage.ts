@@ -65,17 +65,7 @@ export async function generateBeadGrid(options: {
     options.maxColorCount,
   );
 
-  type GenerateBeadGridResult = {
-    beadGrid: BeadGrid;
-    limitedPaletteIds: string[];
-  };
-
-  return {
-    beadGrid: quantizeNearest(normalizedSampledGrid, limitedPaletteIndices),
-    limitedPaletteIds: limitedPaletteIndices.map(
-      (index) => defaultPalette[index].id,
-    ),
-  } satisfies GenerateBeadGridResult;
+  return quantizeNearest(normalizedSampledGrid, limitedPaletteIndices);
 }
 
 export async function generatePreviewBeadGrid(options: {
@@ -85,11 +75,9 @@ export async function generatePreviewBeadGrid(options: {
   enabledPaletteIds: string[];
   maxColorCount: number | null;
 }) {
-  const { beadGrid } = await generateBeadGrid({
+  return generateBeadGrid({
     ...options,
   });
-
-  return beadGrid;
 }
 
 export function buildColorStats(beadGrid: BeadGrid | null) {
@@ -125,6 +113,60 @@ export function buildColorStats(beadGrid: BeadGrid | null) {
       };
     })
     .sort((left, right) => right.count - left.count);
+}
+
+export function limitBeadGridColors(
+  beadGrid: BeadGrid,
+  maxColorCount: number | null,
+): BeadGrid {
+  const usageCounts = new Map<number, number>();
+
+  for (const colorIndex of beadGrid.cells) {
+    if (colorIndex === EMPTY_CELL || !defaultPalette[colorIndex]) {
+      continue;
+    }
+
+    usageCounts.set(colorIndex, (usageCounts.get(colorIndex) ?? 0) + 1);
+  }
+
+  if (
+    maxColorCount === null ||
+    usageCounts.size <= Math.max(1, Math.round(maxColorCount))
+  ) {
+    return {
+      ...beadGrid,
+      cells: new Uint16Array(beadGrid.cells),
+    };
+  }
+
+  const selectedPaletteIndices = reducePaletteIndicesByUsage(
+    usageCounts,
+    Math.max(1, Math.round(maxColorCount)),
+  );
+  const selectedPaletteIndexSet = new Set(selectedPaletteIndices);
+  const cells = new Uint16Array(beadGrid.cells.length);
+
+  for (let index = 0; index < beadGrid.cells.length; index += 1) {
+    const colorIndex = beadGrid.cells[index];
+    const color = defaultPalette[colorIndex];
+
+    if (colorIndex === EMPTY_CELL || !color || selectedPaletteIndexSet.has(colorIndex)) {
+      cells[index] = colorIndex;
+      continue;
+    }
+
+    cells[index] = findNearestPaletteIndex(
+      color.rgb[0],
+      color.rgb[1],
+      color.rgb[2],
+      selectedPaletteIndices,
+    );
+  }
+
+  return {
+    ...beadGrid,
+    cells,
+  };
 }
 
 export function exportColorListText(options: {
@@ -1497,6 +1539,18 @@ function selectLimitedPaletteIndices(
     return enabledPaletteIndices;
   }
 
+  return reducePaletteIndicesByUsage(usageCounts, targetColorCount);
+}
+
+function reducePaletteIndicesByUsage(
+  usageCounts: Map<number, number>,
+  targetColorCount: number,
+) {
+  const selectedPaletteIndices = Array.from(usageCounts.keys()).sort(
+    (left, right) => left - right,
+  );
+  const mergedUsageCounts = new Map(usageCounts);
+
   while (selectedPaletteIndices.length > targetColorCount) {
     let removalPosition = 0;
     let mergeTargetIndex = selectedPaletteIndices[1];
@@ -1522,7 +1576,7 @@ function selectLimitedPaletteIndices(
         }
       }
 
-      const removalCost = (usageCounts.get(paletteIndex) ?? 0) * nearestDistance;
+      const removalCost = (mergedUsageCounts.get(paletteIndex) ?? 0) * nearestDistance;
       if (
         removalCost < lowestRemovalCost ||
         (removalCost === lowestRemovalCost && paletteIndex > selectedPaletteIndices[removalPosition])
@@ -1534,11 +1588,12 @@ function selectLimitedPaletteIndices(
     }
 
     const removedPaletteIndex = selectedPaletteIndices[removalPosition];
-    usageCounts.set(
+    mergedUsageCounts.set(
       mergeTargetIndex,
-      (usageCounts.get(mergeTargetIndex) ?? 0) + (usageCounts.get(removedPaletteIndex) ?? 0),
+      (mergedUsageCounts.get(mergeTargetIndex) ?? 0) +
+        (mergedUsageCounts.get(removedPaletteIndex) ?? 0),
     );
-    usageCounts.delete(removedPaletteIndex);
+    mergedUsageCounts.delete(removedPaletteIndex);
     selectedPaletteIndices.splice(removalPosition, 1);
   }
 

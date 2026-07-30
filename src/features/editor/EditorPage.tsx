@@ -112,7 +112,6 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
   const setShowGrid = useEditorStore((state) => state.setShowGrid);
   const setActiveColorId = useEditorStore((state) => state.setActiveColorId);
   const setMaxColorCount = useEditorStore((state) => state.setMaxColorCount);
-  const limitedPaletteIds = useEditorStore((state) => state.limitedPaletteIds);
   const togglePaletteColor = useEditorStore((state) => state.togglePaletteColor);
   const enableAllPaletteColors = useEditorStore((state) => state.enableAllPaletteColors);
   const disableAllPaletteColors = useEditorStore((state) => state.disableAllPaletteColors);
@@ -332,6 +331,20 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
   const productWidthCm = ((canvas.width * beadSizeMm) / 10).toFixed(1);
   const productHeightCm = ((canvas.height * beadSizeMm) / 10).toFixed(1);
   const colorStats = useMemo(() => buildColorStats(beadGrid), [beadGrid]);
+  const usedColorIds = useMemo(
+    () => new Set(colorStats.map((item) => item.color.id)),
+    [colorStats],
+  );
+  const displayedPalette = useMemo(() => {
+    if (processing.maxColorCount === null || colorStats.length === 0) {
+      return defaultPalette;
+    }
+
+    return [
+      ...colorStats.map((item) => item.color),
+      ...defaultPalette.filter((color) => !usedColorIds.has(color.id)),
+    ];
+  }, [colorStats, processing.maxColorCount, usedColorIds]);
   const saveLabel = lastSavedAt ? formatSavedAt(lastSavedAt) : "未保存";
   const usedColorCount = countUsedColors(beadGrid);
   const enabledColorCount = Math.max(1, enabledPaletteIds.length);
@@ -422,7 +435,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
 
     setMaxColorCount(nextMaxColorCount);
 
-    if (!sourceImage?.src) {
+    if (!sourceImage?.src && !beadGrid) {
       return;
     }
 
@@ -758,7 +771,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
                 canvas={canvas}
                 imageTransform={imageTransform}
                 onImageTransformChange={setImageTransform}
-                previewGrid={previewGrid}
+                previewGrid={previewGrid ?? (livePreviewEnabled ? beadGrid : null)}
                 previewMode={livePreviewEnabled ? "generated" : "source"}
                 sourceImage={sourceImage}
                 themeKey={themeId}
@@ -1144,25 +1157,31 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
                     {activeColor.id} {activeColor.name}
                   </strong>
                   <p>
-                    已启用 {enabledPaletteIds.length}/{defaultPalette.length}{limitedPaletteIds ? ` · 已选 ${limitedPaletteIds.length} 色` : ""}
+                    候选 {enabledPaletteIds.length}/{defaultPalette.length}
+                    {processing.maxColorCount !== null ? ` · 目标 ${colorCountValue} 色` : ""}
+                    {beadGrid ? ` · 当前 ${usedColorCount} 色` : ""}
                   </p>
                 </div>
               </div>
 
               <div className="palette-matrix palette-matrix--dense palette-matrix--preview palette-matrix--sidebar">
-                {defaultPalette
+                {displayedPalette
                   .slice(0, advancedPaletteOpen ? defaultPalette.length : 8)
                   .map((color) => {
                     const enabled = enabledPaletteIds.includes(color.id);
                     const active = color.id === activeColorId;
-                    const limitedExcluded = limitedPaletteIds !== null && enabled && !limitedPaletteIds.includes(color.id);
+                    const used = usedColorIds.has(color.id);
+                    const limitedExcluded =
+                      processing.maxColorCount !== null && beadGrid !== null && enabled && !used;
 
                     return (
                       <button
                         key={color.id}
                         className={`palette-swatch palette-swatch--dense palette-swatch--sidebar${
                           active ? " palette-chip--active" : ""
-                        }${enabled ? "" : " palette-chip--disabled"}${limitedExcluded ? " palette-chip--limited-excluded" : ""}`}
+                        }${enabled ? "" : " palette-chip--disabled"}${
+                          used ? " palette-chip--used" : ""
+                        }${limitedExcluded ? " palette-chip--limited-excluded" : ""}`}
                         aria-label={`${color.id} ${color.name}`}
                         onClick={() => {
                           if (!enabled) {

@@ -21,6 +21,7 @@ import {
 } from "../palette/palette";
 import {
   generateBeadGrid,
+  limitBeadGridColors,
   normalizeProcessingSettings,
   replaceEdgeColor,
   trimBeadGrid,
@@ -41,7 +42,6 @@ type SelectionClipboard = {
 };
 
 type EditorStoreState = ProjectState & {
-  limitedPaletteIds: string[] | null;
   selectionClipboard: SelectionClipboard | null;
   undoStack: HistoryEntry[];
   redoStack: HistoryEntry[];
@@ -112,6 +112,8 @@ let hasShownStorageQuotaNotice = false;
 let generationRequestSequence = 0;
 let lastGenerationHistoryGroupId: string | null = null;
 let lastGenerationUndoStack: HistoryEntry[] | null = null;
+let offlineColorLimitBaseGrid: BeadGrid | null = null;
+let offlineColorLimitUndoStack: HistoryEntry[] | null = null;
 
 const defaultViewTransform: ViewTransform = {
   scale: 1,
@@ -355,7 +357,6 @@ return mergePersistedState(
         persistProjectState({
           ...state,
           processing,
-          limitedPaletteIds: null,
         }),
         state,
       );
@@ -444,21 +445,35 @@ return mergePersistedState(
   generatePattern: async (options) => {
     const state = get();
 
-    if (!state.sourceImage) {
+    if (!state.sourceImage?.src && !state.beadGrid) {
       return;
     }
 
     const requestId = ++generationRequestSequence;
+    const generatedFromSource = Boolean(state.sourceImage?.src);
+    let beadGrid: BeadGrid;
 
-    const beadGridResult = await generateBeadGrid({
-      canvas: state.canvas,
-      sourceImage: state.sourceImage,
-      imageTransform: state.imageTransform,
-      enabledPaletteIds: state.enabledPaletteIds,
-      maxColorCount: state.processing.maxColorCount,
-    });
-    const beadGrid = beadGridResult.beadGrid;
-    const limitedPaletteIds = beadGridResult.limitedPaletteIds;
+    if (state.sourceImage?.src) {
+      beadGrid = await generateBeadGrid({
+        canvas: state.canvas,
+        sourceImage: state.sourceImage,
+        imageTransform: state.imageTransform,
+        enabledPaletteIds: state.enabledPaletteIds,
+        maxColorCount: state.processing.maxColorCount,
+      });
+    } else {
+      if (
+        !offlineColorLimitBaseGrid ||
+        state.undoStack !== offlineColorLimitUndoStack
+      ) {
+        offlineColorLimitBaseGrid = cloneGrid(state.beadGrid);
+      }
+
+      beadGrid = limitBeadGridColors(
+        offlineColorLimitBaseGrid ?? state.beadGrid!,
+        state.processing.maxColorCount,
+      );
+    }
 
     if (requestId !== generationRequestSequence) {
       return;
@@ -483,19 +498,21 @@ return mergePersistedState(
             ...currentState,
             beadGrid,
             canvas: state.canvas,
-            limitedPaletteIds,
           }
-        : {
-            ...pushHistoryState(currentState, {
-              beadGrid,
-              canvas: state.canvas,
-            }),
-            limitedPaletteIds,
-          };
+        : pushHistoryState(currentState, {
+            beadGrid,
+            canvas: state.canvas,
+          });
       const persistedState = persistProjectState(nextState);
 
       lastGenerationHistoryGroupId = historyGroupId;
       lastGenerationUndoStack = historyGroupId ? persistedState.undoStack : null;
+      if (generatedFromSource) {
+        offlineColorLimitBaseGrid = null;
+        offlineColorLimitUndoStack = null;
+      } else {
+        offlineColorLimitUndoStack = persistedState.undoStack;
+      }
 
       return persistedState;
     });
@@ -1229,7 +1246,6 @@ function buildFreshEditorState(overrides?: Partial<ProjectState>): EditorStoreSt
     processing: nextProcessing,
     enabledPaletteIds: nextEnabledPaletteIds,
     activeColorId: nextActiveColorId,
-    limitedPaletteIds: null,
     selectionClipboard: null,
     undoStack: [],
     redoStack: [],
@@ -1283,7 +1299,6 @@ function deserializeProjectFile(projectFile: SerializedProjectFile): EditorStore
         }
       : null,
     currentSelection: project.currentSelection ?? null,
-    limitedPaletteIds: null,
     enabledPaletteIds: normalizeEnabledPaletteIds(project.enabledPaletteIds),
     activeColorId: project.activeColorId,
     selectionClipboard: null,
@@ -1357,7 +1372,6 @@ function persistProjectState(state: EditorStoreState) {
     redoStack: state.redoStack,
     canUndo: state.canUndo,
     canRedo: state.canRedo,
-    limitedPaletteIds: state.limitedPaletteIds,
   };
 }
 

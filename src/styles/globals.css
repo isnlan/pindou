@@ -2594,7 +2594,8 @@ textarea:focus-visible {
 }
 
 .palette-chip--limited-excluded {
-  opacity: 0.72;
+  opacity: 0.34;
+  filter: saturate(0.45);
 }
 
 .palette-chip--limited-excluded .palette-swatch__toggle-ui {
@@ -2603,7 +2604,12 @@ textarea:focus-visible {
 
 .palette-chip--limited-excluded .palette-swatch__code,
 .palette-chip--limited-excluded .palette-swatch__name {
-  opacity: 0.55;
+  opacity: 0.65;
+}
+
+.palette-chip--used {
+  border-color: color-mix(in srgb, var(--theme-accent-primary) 58%, var(--theme-border-default));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-accent-primary) 18%, transparent);
 }
 
 .palette-chip__select {
