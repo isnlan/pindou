@@ -4375,3 +4375,12 @@ textarea:focus-visible {
   margin: 0;
   text-align: center;
 }
+/* QR码 */
+.modal-sheet__qrcode {
+  display: block;
+  width: 180px;
+  height: 180px;
+  margin: 8px 0;
+  border-radius: 8px;
+  object-fit: contain;
+}

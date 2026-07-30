@@ -106,10 +106,6 @@ export function App() {
       <>
         <AuthPage
           onAuthed={() => setGate("app")}
-          onEnterAdmin={() => {
-            navigate(ADMIN_PATH);
-            setGate("admin-login");
-          }}
         />
         <NotificationViewport />
       </>

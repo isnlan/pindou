@@ -6,7 +6,6 @@ import { AuthApiError, setAuthToken, verifyAuthCode } from "./authApi";
 
 type AuthPageProps = {
   onAuthed: () => void;
-  onEnterAdmin: () => void;
 };
 
 const CODE_GROUP = 4;
@@ -18,7 +17,7 @@ function formatInput(raw: string): string {
   return cleaned.replace(new RegExp(`(.{${CODE_GROUP}})(?=.)`, "g"), "$1-");
 }
 
-export function AuthPage({ onAuthed, onEnterAdmin }: AuthPageProps) {
+export function AuthPage({ onAuthed }: AuthPageProps) {
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -51,7 +50,7 @@ export function AuthPage({ onAuthed, onEnterAdmin }: AuthPageProps) {
           </div>
 
           <h1 className="auth-card__title">输入授权码开始使用</h1>
-          <p className="auth-card__subtitle">向管理员获取授权码，验证通过后即可进入工作台</p>
+          <p className="auth-card__subtitle">验证通过后即可进入工作台</p>
 
           <form className="auth-card__form" onSubmit={handleSubmit}>
             <label className="auth-card__label" htmlFor="auth-code-input">
@@ -84,9 +83,6 @@ export function AuthPage({ onAuthed, onEnterAdmin }: AuthPageProps) {
             </Button>
           </form>
 
-          <button className="auth-card__admin-link" onClick={onEnterAdmin} type="button">
-            管理员登录
-          </button>
         </section>
       </main>
     </div>

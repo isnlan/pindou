@@ -36,8 +36,6 @@ type EditorPageProps = {
   onBackHome: () => void;
 };
 
-const PROJECT_REPO_URL = "https://github.com/lyhxx/pindou";
-const FEEDBACK_EMAIL = "xihons@qq.com";
 const APP_VERSION = __APP_VERSION__;
 const UPDATE_NOTICE_STORAGE_KEY = "pindou.editor.update-notice.read.v1";
 const LATEST_UPDATE_NOTICE = {
@@ -1274,12 +1272,10 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
         open={confirmResetOpen}
       />
       <ProjectInfoModal
-        feedbackEmail={FEEDBACK_EMAIL}
         latestUpdateNotice={LATEST_UPDATE_NOTICE}
         latestUpdateRead={!hasUnreadUpdateNotice}
         onClose={() => setProjectInfoOpen(false)}
         open={projectInfoOpen}
-        repoUrl={PROJECT_REPO_URL}
         version={APP_VERSION}
       />
       <HelpCenterModal
@@ -1320,8 +1316,6 @@ type ConfirmResetModalProps = {
 type ProjectInfoModalProps = {
   open: boolean;
   onClose: () => void;
-  repoUrl: string;
-  feedbackEmail: string;
   version: string;
   latestUpdateNotice: {
     label: string;
@@ -1397,13 +1391,10 @@ function ConfirmResetModal({ open, onClose, onConfirm }: ConfirmResetModalProps)
 function ProjectInfoModal({
   open,
   onClose,
-  repoUrl,
-  feedbackEmail,
   version,
   latestUpdateNotice,
   latestUpdateRead,
 }: ProjectInfoModalProps) {
-  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (!open) {
@@ -1420,26 +1411,8 @@ function ProjectInfoModal({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose, open]);
 
-  useEffect(() => {
-    if (!copied) {
-      return;
-    }
-
-    const timer = window.setTimeout(() => setCopied(false), 1600);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
-
   if (!open) {
     return null;
-  }
-
-  async function handleCopyEmail() {
-    try {
-      await navigator.clipboard.writeText(feedbackEmail);
-      setCopied(true);
-    } catch {
-      setCopied(false);
-    }
   }
 
   return (
@@ -1487,25 +1460,14 @@ function ProjectInfoModal({
 
           <div className="modal-sheet__block">
             <div className="modal-sheet__block-head">
-              <strong>查看开源项目</strong>
-              <span>查看源码、版本记录与文档</span>
+              <strong>拼豆社群</strong>
+              <span>扫码加入微信群，一起交流拼豆创作</span>
             </div>
-            <a href={repoUrl} rel="noreferrer" target="_blank">
-              {repoUrl}
-            </a>
-          </div>
-
-          <div className="modal-sheet__block">
-            <div className="modal-sheet__block-head">
-              <strong>问题反馈</strong>
-              <span>功能问题和使用建议可以发邮件</span>
-            </div>
-            <div className="modal-sheet__actions">
-              <a href={`mailto:${feedbackEmail}`}>{feedbackEmail}</a>
-              <Button onClick={() => void handleCopyEmail()} size="compact" tone="editor">
-                {copied ? "已复制" : "复制邮箱"}
-              </Button>
-            </div>
+            <img
+              alt="拼豆社群二维码"
+              className="modal-sheet__qrcode"
+              src="/wxcode.jpg"
+            />
           </div>
         </div>
       </section>
