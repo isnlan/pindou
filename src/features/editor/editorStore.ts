@@ -1357,6 +1357,7 @@ function persistProjectState(state: EditorStoreState) {
     redoStack: state.redoStack,
     canUndo: state.canUndo,
     canRedo: state.canRedo,
+    limitedPaletteIds: state.limitedPaletteIds,
   };
 }
 
