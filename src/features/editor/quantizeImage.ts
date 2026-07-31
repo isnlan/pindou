@@ -30,7 +30,22 @@ const MAX_EXPORT_BITMAP_SIDE = 16384;
 const EXPORT_LEGEND_ITEM_HEIGHT = 44;
 const EDGE_CONNECTED_WHITE_LUMA_MIN = 238;
 const EDGE_CONNECTED_WHITE_CHROMA_MAX = 24;
+const COLOR_DISTANCE_EPSILON = 1e-9;
 const TRIMMABLE_BACKGROUND_COLOR_IDS = new Set(["W01", "W02", "W03", "S01"]);
+
+type LabColor = {
+  lightness: number;
+  greenRed: number;
+  blueYellow: number;
+};
+
+type PaletteCluster = {
+  representativeIndex: number;
+  count: number;
+  members: number[];
+};
+
+const defaultPaletteLab = defaultPalette.map((color) => rgbToLab(color.rgb));
 
 export async function generateBeadGrid(options: {
   canvas: CanvasSize;
@@ -59,13 +74,9 @@ export async function generateBeadGrid(options: {
     imageData: sampleSurface.imageData,
   });
   const normalizedSampledGrid = stripConnectedNearWhiteBackground(sampledGrid);
-  const limitedPaletteIndices = selectLimitedPaletteIndices(
-    normalizedSampledGrid,
-    enabledPaletteIndices,
-    options.maxColorCount,
-  );
+  const beadGrid = quantizeNearest(normalizedSampledGrid, enabledPaletteIndices);
 
-  return quantizeNearest(normalizedSampledGrid, limitedPaletteIndices);
+  return limitBeadGridColors(beadGrid, options.maxColorCount);
 }
 
 export async function generatePreviewBeadGrid(options: {
@@ -139,28 +150,20 @@ export function limitBeadGridColors(
     };
   }
 
-  const selectedPaletteIndices = reducePaletteIndicesByUsage(
+  const reduction = reducePaletteColorsBySimilarity(
     usageCounts,
     Math.max(1, Math.round(maxColorCount)),
   );
-  const selectedPaletteIndexSet = new Set(selectedPaletteIndices);
   const cells = new Uint16Array(beadGrid.cells.length);
 
   for (let index = 0; index < beadGrid.cells.length; index += 1) {
     const colorIndex = beadGrid.cells[index];
-    const color = defaultPalette[colorIndex];
-
-    if (colorIndex === EMPTY_CELL || !color || selectedPaletteIndexSet.has(colorIndex)) {
+    if (colorIndex === EMPTY_CELL || !defaultPalette[colorIndex]) {
       cells[index] = colorIndex;
       continue;
     }
 
-    cells[index] = findNearestPaletteIndex(
-      color.rgb[0],
-      color.rgb[1],
-      color.rgb[2],
-      selectedPaletteIndices,
-    );
+    cells[index] = reduction.representativeByIndex.get(colorIndex) ?? colorIndex;
   }
 
   return {
@@ -1501,113 +1504,127 @@ function quantizeNearest(
   };
 }
 
-function selectLimitedPaletteIndices(
-  sampledGrid: {
-    width: number;
-    height: number;
-    samples: Array<{ r: number; g: number; b: number; a: number } | null>;
-  },
-  enabledPaletteIndices: number[],
-  maxColorCount: number | null,
-) {
-  if (maxColorCount === null || maxColorCount >= enabledPaletteIndices.length) {
-    return enabledPaletteIndices;
-  }
-
-  const targetColorCount = Math.max(1, Math.round(maxColorCount));
-  const usageCounts = new Map<number, number>();
-
-  for (const sample of sampledGrid.samples) {
-    if (!sample) {
-      continue;
-    }
-
-    const paletteIndex = findNearestPaletteIndex(
-      sample.r,
-      sample.g,
-      sample.b,
-      enabledPaletteIndices,
-    );
-    usageCounts.set(paletteIndex, (usageCounts.get(paletteIndex) ?? 0) + 1);
-  }
-
-  const selectedPaletteIndices = Array.from(usageCounts.keys()).sort(
-    (left, right) => left - right,
-  );
-
-  if (selectedPaletteIndices.length <= targetColorCount) {
-    return enabledPaletteIndices;
-  }
-
-  return reducePaletteIndicesByUsage(usageCounts, targetColorCount);
-}
-
-function reducePaletteIndicesByUsage(
+function reducePaletteColorsBySimilarity(
   usageCounts: Map<number, number>,
   targetColorCount: number,
 ) {
-  const selectedPaletteIndices = Array.from(usageCounts.keys()).sort(
-    (left, right) => left - right,
-  );
-  const mergedUsageCounts = new Map(usageCounts);
+  const clusters: PaletteCluster[] = Array.from(usageCounts.entries())
+    .map(([representativeIndex, count]) => ({
+      representativeIndex,
+      count,
+      members: [representativeIndex],
+    }))
+    .sort((left, right) => left.representativeIndex - right.representativeIndex);
 
-  while (selectedPaletteIndices.length > targetColorCount) {
-    let removalPosition = 0;
-    let mergeTargetIndex = selectedPaletteIndices[1];
-    let lowestRemovalCost = Number.POSITIVE_INFINITY;
+  while (clusters.length > targetColorCount) {
+    let bestLeftPosition = 0;
+    let bestRightPosition = 1;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    let bestCombinedCount = Number.POSITIVE_INFINITY;
+    let bestPairOrder: [number, number] = [
+      clusters[0].representativeIndex,
+      clusters[1].representativeIndex,
+    ];
 
-    for (let position = 0; position < selectedPaletteIndices.length; position += 1) {
-      const paletteIndex = selectedPaletteIndices[position];
-      let nearestIndex = selectedPaletteIndices[position === 0 ? 1 : 0];
-      let nearestDistance = paletteDistanceSquared(paletteIndex, nearestIndex);
+    for (let leftPosition = 0; leftPosition < clusters.length - 1; leftPosition += 1) {
+      for (let rightPosition = leftPosition + 1; rightPosition < clusters.length; rightPosition += 1) {
+        const leftCluster = clusters[leftPosition];
+        const rightCluster = clusters[rightPosition];
+        const distance = labDistanceSquared(
+          defaultPaletteLab[leftCluster.representativeIndex],
+          defaultPaletteLab[rightCluster.representativeIndex],
+        );
+        const combinedCount = leftCluster.count + rightCluster.count;
+        const pairOrder: [number, number] = [
+          Math.min(leftCluster.representativeIndex, rightCluster.representativeIndex),
+          Math.max(leftCluster.representativeIndex, rightCluster.representativeIndex),
+        ];
 
-      for (const candidateIndex of selectedPaletteIndices) {
-        if (candidateIndex === paletteIndex) {
-          continue;
-        }
-
-        const distance = paletteDistanceSquared(paletteIndex, candidateIndex);
         if (
-          distance < nearestDistance ||
-          (distance === nearestDistance && candidateIndex < nearestIndex)
+          distance < bestDistance - COLOR_DISTANCE_EPSILON ||
+          (Math.abs(distance - bestDistance) <= COLOR_DISTANCE_EPSILON &&
+            (combinedCount < bestCombinedCount ||
+              (combinedCount === bestCombinedCount &&
+                comparePalettePairOrder(pairOrder, bestPairOrder) < 0)))
         ) {
-          nearestDistance = distance;
-          nearestIndex = candidateIndex;
+          bestLeftPosition = leftPosition;
+          bestRightPosition = rightPosition;
+          bestDistance = distance;
+          bestCombinedCount = combinedCount;
+          bestPairOrder = pairOrder;
         }
-      }
-
-      const removalCost = (mergedUsageCounts.get(paletteIndex) ?? 0) * nearestDistance;
-      if (
-        removalCost < lowestRemovalCost ||
-        (removalCost === lowestRemovalCost && paletteIndex > selectedPaletteIndices[removalPosition])
-      ) {
-        lowestRemovalCost = removalCost;
-        removalPosition = position;
-        mergeTargetIndex = nearestIndex;
       }
     }
 
-    const removedPaletteIndex = selectedPaletteIndices[removalPosition];
-    mergedUsageCounts.set(
-      mergeTargetIndex,
-      (mergedUsageCounts.get(mergeTargetIndex) ?? 0) +
-        (mergedUsageCounts.get(removedPaletteIndex) ?? 0),
-    );
-    mergedUsageCounts.delete(removedPaletteIndex);
-    selectedPaletteIndices.splice(removalPosition, 1);
+    const leftCluster = clusters[bestLeftPosition];
+    const rightCluster = clusters[bestRightPosition];
+    const targetPosition =
+      leftCluster.count > rightCluster.count ||
+      (leftCluster.count === rightCluster.count &&
+        leftCluster.representativeIndex < rightCluster.representativeIndex)
+        ? bestLeftPosition
+        : bestRightPosition;
+    const sourcePosition = targetPosition === bestLeftPosition ? bestRightPosition : bestLeftPosition;
+    const targetCluster = clusters[targetPosition];
+    const sourceCluster = clusters[sourcePosition];
+
+    targetCluster.count += sourceCluster.count;
+    targetCluster.members.push(...sourceCluster.members);
+    clusters.splice(sourcePosition, 1);
   }
 
-  return selectedPaletteIndices;
+  const representativeByIndex = new Map<number, number>();
+
+  for (const cluster of clusters) {
+    for (const memberIndex of cluster.members) {
+      representativeByIndex.set(memberIndex, cluster.representativeIndex);
+    }
+  }
+
+  return {
+    representativeByIndex,
+  };
 }
 
-function paletteDistanceSquared(leftIndex: number, rightIndex: number) {
-  const left = defaultPalette[leftIndex];
-  const right = defaultPalette[rightIndex];
-  const deltaR = left.rgb[0] - right.rgb[0];
-  const deltaG = left.rgb[1] - right.rgb[1];
-  const deltaB = left.rgb[2] - right.rgb[2];
+function comparePalettePairOrder(left: [number, number], right: [number, number]) {
+  return left[0] - right[0] || left[1] - right[1];
+}
 
-  return deltaR * deltaR + deltaG * deltaG + deltaB * deltaB;
+function labDistanceSquared(left: LabColor, right: LabColor) {
+  const deltaLightness = left.lightness - right.lightness;
+  const deltaGreenRed = left.greenRed - right.greenRed;
+  const deltaBlueYellow = left.blueYellow - right.blueYellow;
+
+  return (
+    deltaLightness * deltaLightness +
+    deltaGreenRed * deltaGreenRed +
+    deltaBlueYellow * deltaBlueYellow
+  );
+}
+
+function rgbToLab(rgb: [number, number, number]): LabColor {
+  const [red, green, blue] = rgb.map((channel) => {
+    const normalized = channel / 255;
+    return normalized <= 0.04045
+      ? normalized / 12.92
+      : Math.pow((normalized + 0.055) / 1.055, 2.4);
+  });
+  const x = (red * 0.4124564 + green * 0.3575761 + blue * 0.1804375) / 0.95047;
+  const y = red * 0.2126729 + green * 0.7151522 + blue * 0.072175;
+  const z = (red * 0.0193339 + green * 0.119192 + blue * 0.9503041) / 1.08883;
+  const transform = (value: number) =>
+    value > 0.008856451679035631
+      ? Math.cbrt(value)
+      : 7.787037037037037 * value + 16 / 116;
+  const transformedX = transform(x);
+  const transformedY = transform(y);
+  const transformedZ = transform(z);
+
+  return {
+    lightness: 116 * transformedY - 16,
+    greenRed: 500 * (transformedX - transformedY),
+    blueYellow: 200 * (transformedY - transformedZ),
+  };
 }
 
 function findNearestPaletteIndex(
