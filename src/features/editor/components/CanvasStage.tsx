@@ -6,15 +6,16 @@ import {
   useRef,
   useState,
 } from "react";
-import { defaultPalette } from "../../palette/palette";
 import type {
   BeadGrid,
   CanvasSize,
   EditorTool,
   RectSelection,
   ViewTransform,
+  PaletteColor,
 } from "../../../shared/types/project";
 import { EMPTY_CELL } from "../../../shared/types/project";
+import { getGridCoordinateMarkers } from "../gridCoordinates";
 
 type HoverInfo = {
   x: number;
@@ -26,6 +27,7 @@ type CanvasStageProps = {
   activeTool: EditorTool;
   beadGrid: BeadGrid | null;
   canvas: CanvasSize;
+  palette: PaletteColor[];
   currentSelection: RectSelection | null;
   themeKey?: string;
   onCellAction: (
@@ -68,6 +70,7 @@ export const CanvasStage = forwardRef<HTMLCanvasElement, CanvasStageProps>(
       activeTool,
       beadGrid,
       canvas,
+      palette,
       currentSelection,
       themeKey,
       onCellAction,
@@ -222,7 +225,7 @@ export const CanvasStage = forwardRef<HTMLCanvasElement, CanvasStageProps>(
 
     useLayoutEffect(() => {
       draw();
-    }, [activeTool, beadGrid, canvas, hoverCell, selectionRect, showGrid, stageTheme, stageViewport]);
+    }, [activeTool, beadGrid, canvas, hoverCell, palette, selectionRect, showGrid, stageTheme, stageViewport]);
 
     useLayoutEffect(() => {
       function handleKeyDown(event: KeyboardEvent) {
@@ -319,7 +322,7 @@ export const CanvasStage = forwardRef<HTMLCanvasElement, CanvasStageProps>(
             continue;
           }
 
-          const color = defaultPalette[colorIndex] ?? defaultPalette[0];
+          const color = palette[colorIndex] ?? palette[0];
           context.fillStyle = color.hex;
           context.fillRect(
             paperLeft + x * cellWidth,
@@ -812,6 +815,12 @@ function StageOverlay({
     2.6,
     4.4,
   ) / totalScreenScale;
+  const columnMarkers = showGrid
+    ? getGridCoordinateMarkers(canvas.width, visibleCellWidth)
+    : [];
+  const rowMarkers = showGrid
+    ? getGridCoordinateMarkers(canvas.height, visibleCellHeight)
+    : [];
 
   return (
     <>
@@ -923,11 +932,11 @@ function StageOverlay({
         fill={theme.rulerBorder}
       />
 
-      {Array.from({ length: canvas.width }, (_, index) => {
-        const centerX = paperLeft + index * cellWidth + cellWidth / 2;
-        const label = String(index + 1);
+      {columnMarkers.map((marker) => {
+        const centerX = paperLeft + marker.index * cellWidth + cellWidth / 2;
+        const label = String(marker.label);
         return (
-          <g key={`tx-${index}`}>
+          <g key={`tx-${marker.index}`}>
             <text
               x={centerX}
               y={RULER_SIZE / 2}
@@ -956,11 +965,11 @@ function StageOverlay({
         );
       })}
 
-      {Array.from({ length: canvas.height }, (_, index) => {
-        const centerY = paperTop + index * cellHeight + cellHeight / 2;
-        const label = String(index + 1);
+      {rowMarkers.map((marker) => {
+        const centerY = paperTop + marker.index * cellHeight + cellHeight / 2;
+        const label = String(marker.label);
         return (
-          <g key={`ty-${index}`}>
+          <g key={`ty-${marker.index}`}>
             <text
               x={RULER_SIZE / 2}
               y={centerY}

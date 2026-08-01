@@ -23,7 +23,12 @@ export type PaletteColor = {
   name: string;
   hex: string;
   rgb: [number, number, number];
+  brand?: string;
+  code?: string;
+  series?: string;
 };
+
+export type PaletteId = "mard-221" | "generic-49";
 
 export type BeadGrid = {
   width: number;
@@ -66,6 +71,7 @@ export type ProjectState = {
   imageTransform: ViewTransform;
   stageViewport: ViewTransform;
   processing: ProcessingSettings;
+  paletteId: PaletteId;
   enabledPaletteIds: string[];
   activeTool: EditorTool;
   activeColorId: string;
@@ -73,7 +79,7 @@ export type ProjectState = {
 };
 
 export type SerializedProjectFile = {
-  version: 1;
+  version: 2;
   savedAt: string;
   project: {
     name: string;
@@ -84,9 +90,16 @@ export type SerializedProjectFile = {
     imageTransform: ViewTransform;
     stageViewport: ViewTransform;
     processing: ProcessingSettings;
+    paletteId: PaletteId;
     enabledPaletteIds: string[];
     activeTool: EditorTool;
     activeColorId: string;
     showGrid: boolean;
   };
+};
+
+export type LegacySerializedProjectFile = {
+  version: 1;
+  savedAt: string;
+  project: Omit<SerializedProjectFile["project"], "paletteId">;
 };

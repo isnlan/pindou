@@ -10,14 +10,17 @@ import type {
   SerializedSourceImage,
   SourceImage,
   ViewTransform,
+  PaletteId,
+  LegacySerializedProjectFile,
 } from "../../shared/types/project";
 import { EMPTY_CELL } from "../../shared/types/project";
 import {
-  defaultPalette,
-  defaultPaletteIds,
-  findPaletteColorById,
+  DEFAULT_PALETTE_ID,
+  getPalette,
+  getPaletteIds,
   findPaletteIndexById,
   normalizeEnabledPaletteIds,
+  normalizePaletteId,
 } from "../palette/palette";
 import {
   generateBeadGrid,
@@ -70,7 +73,7 @@ type EditorStore = EditorStoreState & {
   enableAllPaletteColors: () => void;
   disableAllPaletteColors: () => void;
   resetPaletteSelection: () => void;
-  createNewProject: (options?: { name?: string; canvas?: CanvasSize }) => void;
+  createNewProject: (options?: { name?: string; canvas?: CanvasSize; paletteId?: PaletteId }) => void;
   importProjectFile: (projectFile: SerializedProjectFile) => void;
   generatePattern: (options?: GeneratePatternOptions) => Promise<void>;
   trimToDrawing: () => void;
@@ -138,9 +141,10 @@ const initialState: ProjectState = {
   processing: {
     maxColorCount: null,
   },
-  enabledPaletteIds: [...defaultPaletteIds],
+  paletteId: DEFAULT_PALETTE_ID,
+  enabledPaletteIds: getPaletteIds(DEFAULT_PALETTE_ID),
   activeTool: "paint",
-  activeColorId: defaultPalette.find((color) => color.id === "R02")?.id ?? defaultPalette[2].id,
+  activeColorId: getPaletteIds(DEFAULT_PALETTE_ID)[0],
   showGrid: true,
 };
 
@@ -332,7 +336,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     ),
   setActiveColorId: (activeColorId) =>
     set((state) => {
-      const normalized = normalizeEnabledPaletteIds(state.enabledPaletteIds);
+      const normalized = normalizeEnabledPaletteIds(state.enabledPaletteIds, state.paletteId);
 
       if (!normalized.includes(activeColorId)) {
         return state;
@@ -346,7 +350,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   setMaxColorCount: (maxColorCount) =>
     set((state) => {
       const processing = clampProcessingToPalette(
-        normalizeProcessingSettings({ maxColorCount }),
+        normalizeProcessingSettings({ maxColorCount }, getPalette(state.paletteId).length),
         state.enabledPaletteIds.length,
       );
 
@@ -363,7 +367,7 @@ return mergePersistedState(
     }),
   togglePaletteColor: (colorId) =>
     set((state) => {
-      const normalized = normalizeEnabledPaletteIds(state.enabledPaletteIds);
+      const normalized = normalizeEnabledPaletteIds(state.enabledPaletteIds, state.paletteId);
       const isEnabled = normalized.includes(colorId);
       const nextEnabledPaletteIds = isEnabled
         ? normalized.filter((id) => id !== colorId)
@@ -396,10 +400,10 @@ return mergePersistedState(
       mergePersistedState(
         persistProjectState({
           ...state,
-          enabledPaletteIds: [...defaultPaletteIds],
+          enabledPaletteIds: getPaletteIds(state.paletteId),
           processing: clampProcessingToPalette(
             state.processing,
-            defaultPaletteIds.length,
+            getPalette(state.paletteId).length,
           ),
         }),
         state,
@@ -421,12 +425,12 @@ return mergePersistedState(
       mergePersistedState(
         persistProjectState({
           ...state,
-          enabledPaletteIds: [...defaultPaletteIds],
+          enabledPaletteIds: getPaletteIds(state.paletteId),
           processing: clampProcessingToPalette(
             state.processing,
-            defaultPaletteIds.length,
+            getPalette(state.paletteId).length,
           ),
-          activeColorId: state.activeColorId || defaultPaletteIds[0],
+          activeColorId: state.activeColorId || getPaletteIds(state.paletteId)[0],
           currentSelection: null,
         }),
         state,
@@ -437,6 +441,7 @@ return mergePersistedState(
       const fresh = buildFreshEditorState({
         name: options?.name ?? createProjectName(),
         canvas: options?.canvas,
+        paletteId: options?.paletteId ?? DEFAULT_PALETTE_ID,
       });
       return persistProjectState(fresh);
     }),
@@ -460,6 +465,7 @@ return mergePersistedState(
         imageTransform: state.imageTransform,
         enabledPaletteIds: state.enabledPaletteIds,
         maxColorCount: state.processing.maxColorCount,
+        paletteId: state.paletteId,
       });
     } else {
       if (
@@ -472,6 +478,7 @@ return mergePersistedState(
       beadGrid = limitBeadGridColors(
         offlineColorLimitBaseGrid ?? state.beadGrid!,
         state.processing.maxColorCount,
+        getPalette(state.paletteId),
       );
     }
 
@@ -519,7 +526,7 @@ return mergePersistedState(
   },
   trimToDrawing: () =>
     set((state) => {
-      const trimmedGrid = trimBeadGrid(state.beadGrid);
+      const trimmedGrid = trimBeadGrid(state.beadGrid, getPalette(state.paletteId));
       if (!trimmedGrid) {
         return state;
       }
@@ -579,7 +586,7 @@ return mergePersistedState(
     }),
   paintCell: (x, y) =>
     set((state) => {
-      const paletteIndex = findPaletteIndexById(state.activeColorId);
+      const paletteIndex = findPaletteIndexById(state.activeColorId, state.paletteId);
       if (paletteIndex < 0) {
         return state;
       }
@@ -633,7 +640,7 @@ return mergePersistedState(
     }),
   fillArea: (x, y) =>
     set((state) => {
-      const paletteIndex = findPaletteIndexById(state.activeColorId);
+      const paletteIndex = findPaletteIndexById(state.activeColorId, state.paletteId);
       if (paletteIndex < 0) {
         return state;
       }
@@ -662,7 +669,7 @@ return mergePersistedState(
     }),
   fillSelection: (selection) =>
     set((state) => {
-      const paletteIndex = findPaletteIndexById(state.activeColorId);
+      const paletteIndex = findPaletteIndexById(state.activeColorId, state.paletteId);
       if (paletteIndex < 0) {
         return state;
       }
@@ -946,8 +953,8 @@ return mergePersistedState(
         return state;
       }
 
-      const fromIndex = findPaletteIndexById(fromColorId);
-      const toIndex = findPaletteIndexById(toColorId);
+      const fromIndex = findPaletteIndexById(fromColorId, state.paletteId);
+      const toIndex = findPaletteIndexById(toColorId, state.paletteId);
 
       if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) {
         return state;
@@ -984,9 +991,9 @@ return mergePersistedState(
         return state;
       }
 
-      const fromIndex = findPaletteIndexById(fromColorId);
-      const toIndex = findPaletteIndexById(toColorId);
-      const nextGrid = replaceEdgeColor(state.beadGrid, fromIndex, toIndex);
+      const fromIndex = findPaletteIndexById(fromColorId, state.paletteId);
+      const toIndex = findPaletteIndexById(toColorId, state.paletteId);
+      const nextGrid = replaceEdgeColor(state.beadGrid, fromIndex, toIndex, getPalette(state.paletteId));
 
       if (!nextGrid || nextGrid === state.beadGrid) {
         return state;
@@ -1013,7 +1020,7 @@ return mergePersistedState(
         return state;
       }
 
-      const color = defaultPalette[colorIndex];
+      const color = getPalette(state.paletteId)[colorIndex];
       if (!color) {
         return state;
       }
@@ -1024,7 +1031,7 @@ return mergePersistedState(
         enabledPaletteIds: normalizeEnabledPaletteIds([
           ...state.enabledPaletteIds,
           color.id,
-        ]),
+        ], state.paletteId),
       });
     }),
   undo: () =>
@@ -1228,19 +1235,22 @@ function createProjectName() {
 }
 
 function buildFreshEditorState(overrides?: Partial<ProjectState>): EditorStoreState {
-  const nextEnabledPaletteIds = normalizeEnabledPaletteIds(overrides?.enabledPaletteIds);
+  const paletteId = overrides?.paletteId ?? DEFAULT_PALETTE_ID;
+  const palette = getPalette(paletteId);
+  const nextEnabledPaletteIds = normalizeEnabledPaletteIds(overrides?.enabledPaletteIds, paletteId);
   const nextProcessing = clampProcessingToPalette(
-    normalizeProcessingSettings(overrides?.processing),
+    normalizeProcessingSettings(overrides?.processing, palette.length),
     nextEnabledPaletteIds.length,
   );
   const nextActiveColorId =
     overrides?.activeColorId && nextEnabledPaletteIds.includes(overrides.activeColorId)
       ? overrides.activeColorId
-      : nextEnabledPaletteIds[0] ?? defaultPalette[0].id;
+      : nextEnabledPaletteIds[0] ?? palette[0].id;
 
   return {
     ...initialState,
     ...overrides,
+    paletteId,
     name: sanitizeProjectName(overrides?.name ?? initialState.name),
     canvas: sanitizeCanvasSize(overrides?.canvas ?? initialState.canvas),
     processing: nextProcessing,
@@ -1259,7 +1269,7 @@ function serializeProjectState(state: EditorStoreState): SerializedProjectFile {
   const savedAt = new Date().toISOString();
 
   return {
-    version: 1,
+    version: 2,
     savedAt,
     project: {
       name: sanitizeProjectName(state.name),
@@ -1276,7 +1286,8 @@ function serializeProjectState(state: EditorStoreState): SerializedProjectFile {
       imageTransform: state.imageTransform,
       stageViewport: state.stageViewport,
       processing: state.processing,
-      enabledPaletteIds: normalizeEnabledPaletteIds(state.enabledPaletteIds),
+      paletteId: state.paletteId,
+      enabledPaletteIds: normalizeEnabledPaletteIds(state.enabledPaletteIds, state.paletteId),
       activeTool: state.activeTool,
       activeColorId: state.activeColorId,
       showGrid: state.showGrid,
@@ -1299,7 +1310,8 @@ function deserializeProjectFile(projectFile: SerializedProjectFile): EditorStore
         }
       : null,
     currentSelection: project.currentSelection ?? null,
-    enabledPaletteIds: normalizeEnabledPaletteIds(project.enabledPaletteIds),
+    paletteId: project.paletteId,
+    enabledPaletteIds: normalizeEnabledPaletteIds(project.enabledPaletteIds, project.paletteId),
     activeColorId: project.activeColorId,
     selectionClipboard: null,
     undoStack: [],
@@ -1311,17 +1323,20 @@ function deserializeProjectFile(projectFile: SerializedProjectFile): EditorStore
 }
 
 function normalizeSerializedProject(project: SerializedProjectFile["project"]) {
-  const enabledPaletteIds = normalizeEnabledPaletteIds(project.enabledPaletteIds);
+  const paletteId = normalizePaletteId(project.paletteId);
+  const palette = getPalette(paletteId);
+  const enabledPaletteIds = normalizeEnabledPaletteIds(project.enabledPaletteIds, paletteId);
   const processing = clampProcessingToPalette(
-    normalizeProcessingSettings(project.processing),
+    normalizeProcessingSettings(project.processing, palette.length),
     enabledPaletteIds.length,
   );
   const activeColorId = enabledPaletteIds.includes(project.activeColorId)
     ? project.activeColorId
-    : enabledPaletteIds[0] ?? findPaletteColorById(defaultPalette[0].id).id;
+    : enabledPaletteIds[0] ?? palette[0].id;
 
   return {
     ...project,
+    paletteId,
     name: sanitizeProjectName(project.name),
     canvas: sanitizeCanvasSize(project.canvas),
     sourceImage: deserializeSourceImage(project.sourceImage),
@@ -1400,11 +1415,12 @@ function loadStoredProject(): SerializedProjectFile | null {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as SerializedProjectFile;
-      if (parsed?.version === 1 && parsed?.project) {
+      const parsed = JSON.parse(raw) as SerializedProjectFile | LegacySerializedProjectFile;
+      if ((parsed?.version === 1 || parsed?.version === 2) && parsed?.project) {
+        const migrated = migrateProjectFile(parsed);
         return {
-          ...parsed,
-          project: normalizeSerializedProject(parsed.project),
+          ...migrated,
+          project: normalizeSerializedProject(migrated.project),
         };
       }
     }
@@ -1429,13 +1445,33 @@ function loadStoredProject(): SerializedProjectFile | null {
       legacyParsed.projects[0];
 
     return {
-      version: 1,
+      version: 2,
       savedAt: currentRecord.savedAt,
-      project: normalizeSerializedProject(currentRecord.project),
+      project: normalizeSerializedProject({
+        ...currentRecord.project,
+        paletteId: "generic-49",
+      }),
     };
   } catch {
     return null;
   }
+}
+
+function migrateProjectFile(
+  projectFile: SerializedProjectFile | LegacySerializedProjectFile,
+): SerializedProjectFile {
+  if (projectFile.version === 2) {
+    return projectFile;
+  }
+
+  return {
+    version: 2,
+    savedAt: projectFile.savedAt,
+    project: {
+      ...projectFile.project,
+      paletteId: "generic-49",
+    },
+  };
 }
 
 export function hasStoredEditorProject() {

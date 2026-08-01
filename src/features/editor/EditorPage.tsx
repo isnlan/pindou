@@ -4,9 +4,9 @@ import { Button } from "../../components/ui/Button";
 import { BrandMark } from "../../components/ui/BrandMark";
 import { PanelCard } from "../../components/ui/PanelCard";
 import { notifyError } from "../../shared/notifications/notificationStore";
-import type { BeadGrid, RectSelection } from "../../shared/types/project";
+import type { BeadGrid, PaletteId, RectSelection } from "../../shared/types/project";
 import { EMPTY_CELL } from "../../shared/types/project";
-import { defaultPalette, findPaletteColorById } from "../palette/palette";
+import { findPaletteColorById, getPalette, getPaletteDefinition } from "../palette/palette";
 import { CreateCanvasModal } from "../home/CreateCanvasModal";
 import { CanvasStage } from "./components/CanvasStage";
 import { ImagePositionPreview } from "./components/ImagePositionPreview";
@@ -69,8 +69,8 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
   const colorCountGroupResetRef = useRef<number | null>(null);
   const colorCountHistoryGroupRef = useRef<string | null>(null);
   const colorCountHistorySequenceRef = useRef(0);
-  const [replaceFromColorId, setReplaceFromColorId] = useState<string>(defaultPalette[0].id);
-  const [replaceToColorId, setReplaceToColorId] = useState<string>(defaultPalette[2].id);
+  const [replaceFromColorId, setReplaceFromColorId] = useState<string>("");
+  const [replaceToColorId, setReplaceToColorId] = useState<string>("");
   const [replaceSelectionSlot, setReplaceSelectionSlot] = useState<"from" | "to" | null>(null);
   const [canvasWidthInput, setCanvasWidthInput] = useState("120");
   const [canvasHeightInput, setCanvasHeightInput] = useState("120");
@@ -95,6 +95,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
   const imageTransform = useEditorStore((state) => state.imageTransform);
   const stageViewport = useEditorStore((state) => state.stageViewport);
   const processing = useEditorStore((state) => state.processing);
+  const paletteId = useEditorStore((state) => state.paletteId);
   const enabledPaletteIds = useEditorStore((state) => state.enabledPaletteIds);
   const activeTool = useEditorStore((state) => state.activeTool);
   const activeColorId = useEditorStore((state) => state.activeColorId);
@@ -137,6 +138,8 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
   const clearSelection = useEditorStore((state) => state.clearSelection);
   const undo = useEditorStore((state) => state.undo);
   const redo = useEditorStore((state) => state.redo);
+  const palette = useMemo(() => getPalette(paletteId), [paletteId]);
+  const paletteDefinition = getPaletteDefinition(paletteId);
 
   useEffect(() => {
     document.documentElement.classList.add("app-editor-active");
@@ -197,6 +200,11 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
   }, [canvas.height, canvas.width]);
 
   useEffect(() => {
+    setReplaceFromColorId(palette[0]?.id ?? "");
+    setReplaceToColorId(palette[1]?.id ?? palette[0]?.id ?? "");
+  }, [palette]);
+
+  useEffect(() => {
     let cancelled = false;
 
     if (!sourceImage?.src || !livePreviewEnabled) {
@@ -210,6 +218,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
       imageTransform,
       enabledPaletteIds,
       maxColorCount: processing.maxColorCount,
+      paletteId,
     })
       .then((grid) => {
         if (!cancelled) {
@@ -229,6 +238,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
     canvas,
     enabledPaletteIds,
     imageTransform,
+    paletteId,
     processing.maxColorCount,
     sourceImage,
     livePreviewEnabled,
@@ -323,30 +333,30 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
     undo,
   ]);
 
-  const activeColor = findPaletteColorById(activeColorId);
-  const replaceFromColor = findPaletteColorById(replaceFromColorId);
-  const replaceToColor = findPaletteColorById(replaceToColorId);
+  const activeColor = findPaletteColorById(activeColorId, paletteId);
+  const replaceFromColor = findPaletteColorById(replaceFromColorId, paletteId);
+  const replaceToColor = findPaletteColorById(replaceToColorId, paletteId);
   const totalCells = canvas.width * canvas.height;
   const beadSizeMm = 5;
   const productWidthCm = ((canvas.width * beadSizeMm) / 10).toFixed(1);
   const productHeightCm = ((canvas.height * beadSizeMm) / 10).toFixed(1);
-  const colorStats = useMemo(() => buildColorStats(beadGrid), [beadGrid]);
+  const colorStats = useMemo(() => buildColorStats(beadGrid, palette), [beadGrid, palette]);
   const usedColorIds = useMemo(
     () => new Set(colorStats.map((item) => item.color.id)),
     [colorStats],
   );
   const displayedPalette = useMemo(() => {
     if (processing.maxColorCount === null || colorStats.length === 0) {
-      return defaultPalette;
+      return palette;
     }
 
     return [
       ...colorStats.map((item) => item.color),
-      ...defaultPalette.filter((color) => !usedColorIds.has(color.id)),
+      ...palette.filter((color) => !usedColorIds.has(color.id)),
     ];
-  }, [colorStats, processing.maxColorCount, usedColorIds]);
+  }, [colorStats, palette, processing.maxColorCount, usedColorIds]);
   const saveLabel = lastSavedAt ? formatSavedAt(lastSavedAt) : "未保存";
-  const usedColorCount = countUsedColors(beadGrid);
+  const usedColorCount = countUsedColors(beadGrid, palette.length);
   const enabledColorCount = Math.max(1, enabledPaletteIds.length);
   const colorCountValue = Math.min(
     processing.maxColorCount ?? enabledColorCount,
@@ -503,6 +513,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
       activeTool,
       activeColorId,
       showGrid,
+      paletteId,
     });
 
     downloadTextFile(`${sanitizeFileName(exportBaseName)}.json`, json, "application/json");
@@ -512,6 +523,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
     const pngUrl = exportFormalPatternPng({
       beadGrid,
       name: exportBaseName,
+      palette,
     });
     downloadUrl(`${sanitizeFileName(exportBaseName)}-pattern.png`, pngUrl);
   }
@@ -552,9 +564,10 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
     setConfirmResetOpen(true);
   }
 
-  function handleCreateCanvas(width: number, height: number) {
+  function handleCreateCanvas(width: number, height: number, nextPaletteId: PaletteId) {
     createNewProject({
       canvas: { width, height },
+      paletteId: nextPaletteId,
     });
     setCreateCanvasOpen(false);
   }
@@ -773,6 +786,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
                 onImageTransformChange={setImageTransform}
                 previewGrid={previewGrid ?? (livePreviewEnabled ? beadGrid : null)}
                 previewMode={livePreviewEnabled ? "generated" : "source"}
+                palette={palette}
                 sourceImage={sourceImage}
                 themeKey={themeId}
               />
@@ -1080,6 +1094,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
                 activeTool={activeTool}
                 beadGrid={beadGrid}
                 canvas={canvas}
+                palette={palette}
                 currentSelection={currentSelection}
                 themeKey={themeId}
                 onCellAction={(x, y, mode) => {
@@ -1111,7 +1126,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
                   if (resolvedMode === "picker" && beadGrid) {
                     const colorIndex = beadGrid.cells[y * beadGrid.width + x];
                     const pickedColor =
-                      colorIndex === EMPTY_CELL ? null : defaultPalette[colorIndex] ?? null;
+                      colorIndex === EMPTY_CELL ? null : palette[colorIndex] ?? null;
                     if (pickedColor) {
                       applyReplaceSlotColor(pickedColor.id);
                     }
@@ -1131,6 +1146,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
 
           <footer className="stage-statusbar">
             <span className="stage-statusbar__item">{`画布 ${canvas.width} x ${canvas.height}`}</span>
+            <span className="stage-statusbar__item">{paletteDefinition.label}</span>
             <span className="stage-statusbar__item">{`视图 ${stageViewport.scale.toFixed(2)}x`}</span>
             <span className="stage-statusbar__item">{`已用 ${usedColorCount} 色`}</span>
             {selectionInfo ? (
@@ -1157,7 +1173,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
                     {activeColor.id} {activeColor.name}
                   </strong>
                   <p>
-                    候选 {enabledPaletteIds.length}/{defaultPalette.length}
+                    {paletteDefinition.label} · 候选 {enabledPaletteIds.length}/{palette.length}
                     {processing.maxColorCount !== null ? ` · 目标 ${colorCountValue} 色` : ""}
                     {beadGrid ? ` · 当前 ${usedColorCount} 色` : ""}
                   </p>
@@ -1166,7 +1182,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
 
               <div className="palette-matrix palette-matrix--dense palette-matrix--preview palette-matrix--sidebar">
                 {displayedPalette
-                  .slice(0, advancedPaletteOpen ? defaultPalette.length : 8)
+                  .slice(0, advancedPaletteOpen ? palette.length : 8)
                   .map((color) => {
                     const enabled = enabledPaletteIds.includes(color.id);
                     const active = color.id === activeColorId;
@@ -1385,7 +1401,7 @@ export function EditorPage({ onBackHome }: EditorPageProps) {
 
       <CreateCanvasModal
         onClose={() => setCreateCanvasOpen(false)}
-        onCreate={({ width, height }) => handleCreateCanvas(width, height)}
+        onCreate={({ width, height, paletteId: nextPaletteId }) => handleCreateCanvas(width, height, nextPaletteId)}
         open={createCanvasOpen}
       />
       <ConfirmResetModal
@@ -2009,7 +2025,7 @@ function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function countUsedColors(beadGrid: BeadGrid | null) {
+function countUsedColors(beadGrid: BeadGrid | null, paletteSize: number) {
   if (!beadGrid) {
     return 0;
   }
@@ -2017,7 +2033,7 @@ function countUsedColors(beadGrid: BeadGrid | null) {
   const used = new Set<number>();
 
   for (const colorIndex of beadGrid.cells) {
-    if (colorIndex !== EMPTY_CELL && colorIndex < defaultPalette.length) {
+    if (colorIndex !== EMPTY_CELL && colorIndex < paletteSize) {
       used.add(colorIndex);
     }
   }

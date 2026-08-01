@@ -10,6 +10,7 @@ import { EditorPage } from "../features/editor/EditorPage";
 import { hasStoredEditorProject, useEditorStore } from "../features/editor/editorStore";
 import { CreateCanvasModal } from "../features/home/CreateCanvasModal";
 import { HomePage } from "../features/home/HomePage";
+import type { PaletteId } from "../shared/types/project";
 
 type GateView = "checking" | "auth" | "admin-login" | "admin" | "app";
 
@@ -83,9 +84,10 @@ export function App() {
     setCreateCanvasOpen(true);
   }
 
-  function handleCreateCanvas(width: number, height: number) {
+  function handleCreateCanvas(width: number, height: number, paletteId: PaletteId) {
     createNewProject({
       canvas: { width, height },
+      paletteId,
     });
     setCreateCanvasOpen(false);
     setView("editor");
@@ -151,7 +153,7 @@ export function App() {
       )}
       <CreateCanvasModal
         onClose={() => setCreateCanvasOpen(false)}
-        onCreate={({ width, height }) => handleCreateCanvas(width, height)}
+        onCreate={({ width, height, paletteId }) => handleCreateCanvas(width, height, paletteId)}
         open={createCanvasOpen}
       />
       <NotificationViewport />

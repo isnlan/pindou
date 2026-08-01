@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "../../components/ui/Button";
+import type { PaletteId } from "../../shared/types/project";
 
 type CreateCanvasModalProps = {
   open: boolean;
   onClose: () => void;
-  onCreate: (payload: { width: number; height: number; presetLabel?: string }) => void;
+  onCreate: (payload: { width: number; height: number; presetLabel?: string; paletteId: PaletteId }) => void;
 };
 
 const presets = [
@@ -17,6 +18,7 @@ export function CreateCanvasModal({ open, onClose, onCreate }: CreateCanvasModal
   const [width, setWidth] = useState("48");
   const [height, setHeight] = useState("48");
   const [selectedPreset, setSelectedPreset] = useState<string>("常用");
+  const [paletteId, setPaletteId] = useState<PaletteId>("mard-221");
 
   useEffect(() => {
     if (!open) {
@@ -68,6 +70,7 @@ export function CreateCanvasModal({ open, onClose, onCreate }: CreateCanvasModal
       width: widthValue,
       height: heightValue,
       presetLabel: selectedPreset,
+      paletteId,
     });
   }
 
@@ -155,6 +158,40 @@ export function CreateCanvasModal({ open, onClose, onCreate }: CreateCanvasModal
 
           <section className="modal-sheet__block">
             <div className="modal-sheet__block-head">
+              <strong>使用色库</strong>
+              <span>创建后不可切换</span>
+            </div>
+            <div className="preset-grid preset-grid--palette" role="radiogroup" aria-label="使用色库">
+              <button
+                aria-checked={paletteId === "mard-221"}
+                className={`preset-card${paletteId === "mard-221" ? " preset-card--active" : ""}`}
+                onClick={() => setPaletteId("mard-221")}
+                role="radio"
+                type="button"
+              >
+                <strong>MARD 221 色库</strong>
+                <span>221 个真实品牌色号</span>
+                <small>适合照片还原与按色号备料</small>
+              </button>
+              <button
+                aria-checked={paletteId === "generic-49"}
+                className={`preset-card${paletteId === "generic-49" ? " preset-card--active" : ""}`}
+                onClick={() => setPaletteId("generic-49")}
+                role="radio"
+                type="button"
+              >
+                <strong>通用 49 色库</strong>
+                <span>49 个通用颜色</span>
+                <small>适合少量颜色和已有配色习惯</small>
+              </button>
+            </div>
+            <p className="muted-copy muted-copy--compact">
+              屏幕颜色为实体拼豆近似值，成品会受批次、光线与屏幕显示影响。
+            </p>
+          </section>
+
+          <section className="modal-sheet__block">
+            <div className="modal-sheet__block-head">
               <strong>结果预估</strong>
               <span>{summaryLabel}</span>
             </div>
@@ -168,6 +205,10 @@ export function CreateCanvasModal({ open, onClose, onCreate }: CreateCanvasModal
                 <strong>
                   {widthCm} x {heightCm} cm
                 </strong>
+              </div>
+              <div>
+                <span>使用色库</span>
+                <strong>{paletteId === "mard-221" ? "MARD 221 色" : "通用 49 色"}</strong>
               </div>
             </div>
           </section>

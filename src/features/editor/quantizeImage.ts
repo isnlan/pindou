@@ -6,19 +6,27 @@ import type {
   SerializedProjectFile,
   SourceImage,
   ViewTransform,
+  PaletteColor,
+  PaletteId,
 } from "../../shared/types/project";
 import { EMPTY_CELL } from "../../shared/types/project";
 import {
-  defaultPalette,
-  defaultPaletteIds,
+  getPalette,
+  getPaletteIds,
   findPaletteIndexById,
   normalizeEnabledPaletteIds,
+  normalizePaletteId,
 } from "../palette/palette";
+import {
+  getGridCoordinateMargin,
+  getGridCoordinateMarkers,
+} from "./gridCoordinates";
 
-const BASE_STAGE_SAMPLE_SIZE = 1200;
-const MIN_VISIBLE_ALPHA = 24;
+const MAX_SAMPLE_BITMAP_SIDE = 8192;
+const MAX_SAMPLE_BITMAP_PIXELS = 32 * 1024 * 1024;
+const MIN_VISIBLE_ALPHA = 128;
+const NEAR_DUPLICATE_DELTA_E = 1;
 const EXPORT_MARGIN = 24;
-const EXPORT_RULER_SIZE = 34;
 const EXPORT_MIN_CELL_SIZE = 8;
 const EXPORT_MAX_CELL_SIZE = 28;
 const EXPORT_DRAW_SIZE = 2200;
@@ -28,12 +36,16 @@ const EXPORT_FOOTER_MIN_HEIGHT = 176;
 const EXPORT_PIXEL_RATIO = 2;
 const MAX_EXPORT_BITMAP_SIDE = 16384;
 const EXPORT_LEGEND_ITEM_HEIGHT = 44;
-const EDGE_CONNECTED_WHITE_LUMA_MIN = 238;
-const EDGE_CONNECTED_WHITE_CHROMA_MAX = 24;
 const COLOR_DISTANCE_EPSILON = 1e-9;
-const TRIMMABLE_BACKGROUND_COLOR_IDS = new Set(["W01", "W02", "W03", "S01"]);
+const TRIMMABLE_BACKGROUND_COLOR_IDS = new Set(["W01", "W02", "W03", "S01", "H1", "H2"]);
 
 type LabColor = {
+  lightness: number;
+  greenRed: number;
+  blueYellow: number;
+};
+
+type OklabColor = {
   lightness: number;
   greenRed: number;
   blueYellow: number;
@@ -45,15 +57,15 @@ type PaletteCluster = {
   members: number[];
 };
 
-const defaultPaletteLab = defaultPalette.map((color) => rgbToLab(color.rgb));
-
 export async function generateBeadGrid(options: {
   canvas: CanvasSize;
   sourceImage: SourceImage;
   imageTransform: ViewTransform;
   enabledPaletteIds: string[];
   maxColorCount: number | null;
+  paletteId: PaletteId;
 }) {
+  const palette = getPalette(options.paletteId);
   const image = await loadImage(options.sourceImage.src);
   const sampleSurface = renderSourceToSampleSurface({
     canvas: options.canvas,
@@ -61,8 +73,8 @@ export async function generateBeadGrid(options: {
     imageTransform: options.imageTransform,
   });
 
-  const enabledPaletteIndices = normalizeEnabledPaletteIds(options.enabledPaletteIds)
-    .map((colorId) => findPaletteIndexById(colorId))
+  const enabledPaletteIndices = normalizeEnabledPaletteIds(options.enabledPaletteIds, options.paletteId)
+    .map((colorId) => findPaletteIndexById(colorId, options.paletteId))
     .filter((index): index is number => index >= 0);
 
   if (enabledPaletteIndices.length === 0) {
@@ -73,10 +85,14 @@ export async function generateBeadGrid(options: {
     canvas: options.canvas,
     imageData: sampleSurface.imageData,
   });
-  const normalizedSampledGrid = stripConnectedNearWhiteBackground(sampledGrid);
-  const beadGrid = quantizeNearest(normalizedSampledGrid, enabledPaletteIndices);
+  const beadGrid = quantizeNearest(sampledGrid, enabledPaletteIndices, palette);
+  const normalizedBeadGrid = mergeNearDuplicatePaletteColors(
+    beadGrid,
+    enabledPaletteIndices,
+    palette,
+  );
 
-  return limitBeadGridColors(beadGrid, options.maxColorCount);
+  return limitBeadGridColors(normalizedBeadGrid, options.maxColorCount, palette);
 }
 
 export async function generatePreviewBeadGrid(options: {
@@ -85,13 +101,14 @@ export async function generatePreviewBeadGrid(options: {
   imageTransform: ViewTransform;
   enabledPaletteIds: string[];
   maxColorCount: number | null;
+  paletteId: PaletteId;
 }) {
   return generateBeadGrid({
     ...options,
   });
 }
 
-export function buildColorStats(beadGrid: BeadGrid | null) {
+export function buildColorStats(beadGrid: BeadGrid | null, palette: PaletteColor[]) {
   if (!beadGrid) {
     return [];
   }
@@ -114,7 +131,7 @@ export function buildColorStats(beadGrid: BeadGrid | null) {
 
   return Array.from(counts.entries())
     .map(([colorIndex, count]) => {
-      const color = defaultPalette[colorIndex] ?? defaultPalette[0];
+      const color = palette[colorIndex] ?? palette[0];
 
       return {
         colorIndex,
@@ -129,11 +146,12 @@ export function buildColorStats(beadGrid: BeadGrid | null) {
 export function limitBeadGridColors(
   beadGrid: BeadGrid,
   maxColorCount: number | null,
+  palette: PaletteColor[],
 ): BeadGrid {
   const usageCounts = new Map<number, number>();
 
   for (const colorIndex of beadGrid.cells) {
-    if (colorIndex === EMPTY_CELL || !defaultPalette[colorIndex]) {
+    if (colorIndex === EMPTY_CELL || !palette[colorIndex]) {
       continue;
     }
 
@@ -153,12 +171,13 @@ export function limitBeadGridColors(
   const reduction = reducePaletteColorsBySimilarity(
     usageCounts,
     Math.max(1, Math.round(maxColorCount)),
+    palette,
   );
   const cells = new Uint16Array(beadGrid.cells.length);
 
   for (let index = 0; index < beadGrid.cells.length; index += 1) {
     const colorIndex = beadGrid.cells[index];
-    if (colorIndex === EMPTY_CELL || !defaultPalette[colorIndex]) {
+    if (colorIndex === EMPTY_CELL || !palette[colorIndex]) {
       cells[index] = colorIndex;
       continue;
     }
@@ -177,7 +196,7 @@ export function exportColorListText(options: {
   canvas: CanvasSize;
   stats: Array<{
     colorIndex: number;
-    color: (typeof defaultPalette)[number];
+    color: PaletteColor;
     count: number;
     ratio: number;
   }>;
@@ -218,9 +237,10 @@ export function exportProjectJson(options: {
   activeTool: "paint" | "erase" | "picker" | "pan" | "fill" | "select";
   activeColorId: string;
   showGrid: boolean;
+  paletteId: PaletteId;
 }) {
   const payload: SerializedProjectFile = {
-    version: 1,
+    version: 2,
     savedAt: new Date().toISOString(),
     project: {
       name: options.name,
@@ -237,7 +257,8 @@ export function exportProjectJson(options: {
       imageTransform: options.imageTransform,
       stageViewport: options.stageViewport,
       processing: options.processing,
-      enabledPaletteIds: normalizeEnabledPaletteIds(options.enabledPaletteIds),
+      paletteId: options.paletteId,
+      enabledPaletteIds: normalizeEnabledPaletteIds(options.enabledPaletteIds, options.paletteId),
       activeTool: options.activeTool,
       activeColorId: options.activeColorId,
       showGrid: options.showGrid,
@@ -260,22 +281,31 @@ export function parseProjectJson(raw: string): SerializedProjectFile {
     throw new Error("工程文件结构无效。");
   }
 
-  const projectFile = parsed as Partial<SerializedProjectFile>;
+  const projectFile = parsed as {
+    version?: number;
+    project?: Partial<SerializedProjectFile["project"]>;
+    savedAt?: string;
+  };
 
-  if (projectFile.version !== 1 || !projectFile.project) {
+  if ((projectFile.version !== 1 && projectFile.version !== 2) || !projectFile.project) {
     throw new Error("暂不支持该工程文件版本。");
   }
 
-  const enabledPaletteIds = normalizeEnabledPaletteIds(projectFile.project.enabledPaletteIds);
+  const paletteId: PaletteId = projectFile.version === 1
+    ? "generic-49"
+    : normalizePaletteId(projectFile.project.paletteId);
+  const enabledPaletteIds = normalizeEnabledPaletteIds(projectFile.project.enabledPaletteIds, paletteId);
 
   return {
     ...projectFile,
+    version: 2,
     project: {
       ...projectFile.project,
+      paletteId,
       enabledPaletteIds,
       activeColorId:
         enabledPaletteIds.includes(projectFile.project.activeColorId ?? "")
-          ? projectFile.project.activeColorId ?? defaultPaletteIds[0]
+          ? projectFile.project.activeColorId ?? getPaletteIds(paletteId)[0]
           : enabledPaletteIds[0],
       processing: normalizeProcessingSettings(projectFile.project.processing),
     },
@@ -284,6 +314,7 @@ export function parseProjectJson(raw: string): SerializedProjectFile {
 
 export function normalizeProcessingSettings(
   processing?: Partial<ProcessingSettings> | null,
+  paletteSize = 221,
 ): ProcessingSettings {
   const maxColorCount = processing?.maxColorCount;
 
@@ -297,34 +328,35 @@ export function normalizeProcessingSettings(
 
   return {
     maxColorCount: Math.min(
-      defaultPalette.length,
+      paletteSize,
       Math.max(1, Math.round(maxColorCount)),
     ),
   };
 }
 
-export function exportStagePng(beadGrid: BeadGrid | null) {
+export function exportStagePng(beadGrid: BeadGrid | null, palette: PaletteColor[]) {
   if (!beadGrid) {
     throw new Error("当前没有可导出的图纸画布。");
   }
 
-  const canvas = renderPatternChart(beadGrid);
+  const canvas = renderPatternChart(beadGrid, palette);
   return canvas.toDataURL("image/png");
 }
 
 export function exportFormalPatternPng(options: {
   beadGrid: BeadGrid | null;
   name: string;
+  palette: PaletteColor[];
 }) {
   if (!options.beadGrid) {
     throw new Error("当前没有可导出的图纸画布。");
   }
 
-  const canvas = renderFormalPatternChart(options.beadGrid, options.name);
+  const canvas = renderFormalPatternChart(options.beadGrid, options.name, options.palette);
   return canvas.toDataURL("image/png");
 }
 
-export function exportFinishedPng(beadGrid: BeadGrid | null) {
+export function exportFinishedPng(beadGrid: BeadGrid | null, palette: PaletteColor[]) {
   if (!beadGrid) {
     throw new Error("当前没有可导出的成品图。");
   }
@@ -350,7 +382,7 @@ export function exportFinishedPng(beadGrid: BeadGrid | null) {
         continue;
       }
 
-      const color = defaultPalette[colorIndex] ?? defaultPalette[0];
+      const color = palette[colorIndex] ?? palette[0];
       drawFinishedBead(context, x * scale, y * scale, scale, color.hex);
     }
   }
@@ -358,12 +390,12 @@ export function exportFinishedPng(beadGrid: BeadGrid | null) {
   return canvas.toDataURL("image/png");
 }
 
-export function trimBeadGrid(beadGrid: BeadGrid | null) {
+export function trimBeadGrid(beadGrid: BeadGrid | null, palette: PaletteColor[]) {
   if (!beadGrid) {
     return null;
   }
 
-  const ignoredCells = buildTrimmableBackgroundMask(beadGrid);
+  const ignoredCells = buildTrimmableBackgroundMask(beadGrid, palette);
   let minX = beadGrid.width;
   let minY = beadGrid.height;
   let maxX = -1;
@@ -411,8 +443,8 @@ export function trimBeadGrid(beadGrid: BeadGrid | null) {
   };
 }
 
-function buildTrimmableBackgroundMask(beadGrid: BeadGrid) {
-  const candidateColorIndex = findConnectedBorderBackgroundColor(beadGrid);
+function buildTrimmableBackgroundMask(beadGrid: BeadGrid, palette: PaletteColor[]) {
+  const candidateColorIndex = findConnectedBorderBackgroundColor(beadGrid, palette);
   if (candidateColorIndex === null) {
     return null;
   }
@@ -466,7 +498,7 @@ function buildTrimmableBackgroundMask(beadGrid: BeadGrid) {
   return null;
 }
 
-function findConnectedBorderBackgroundColor(beadGrid: BeadGrid) {
+function findConnectedBorderBackgroundColor(beadGrid: BeadGrid, palette: PaletteColor[]) {
   const borderCounts = new Map<number, number>();
   let occupiedBorderCount = 0;
 
@@ -510,7 +542,7 @@ function findConnectedBorderBackgroundColor(beadGrid: BeadGrid) {
     return null;
   }
 
-  const winnerColor = defaultPalette[winner];
+  const winnerColor = palette[winner];
   if (!winnerColor || !TRIMMABLE_BACKGROUND_COLOR_IDS.has(winnerColor.id)) {
     return null;
   }
@@ -545,14 +577,17 @@ function drawFinishedBead(
   context.fill();
 }
 
-function renderPatternChart(beadGrid: BeadGrid) {
+function renderPatternChart(beadGrid: BeadGrid, palette: PaletteColor[]) {
   const maxSide = Math.max(beadGrid.width, beadGrid.height);
   const cellSize = clampNumber(
     Math.floor(EXPORT_DRAW_SIZE / Math.max(1, maxSide)),
     EXPORT_MIN_CELL_SIZE,
     EXPORT_MAX_CELL_SIZE,
   );
-  const rulerSize = cellSize >= 18 ? 40 : EXPORT_RULER_SIZE;
+  const rulerSize = Math.max(
+    getGridCoordinateMargin(beadGrid.width),
+    getGridCoordinateMargin(beadGrid.height),
+  );
   const paperWidth = beadGrid.width * cellSize;
   const paperHeight = beadGrid.height * cellSize;
   const logicalWidth = EXPORT_MARGIN * 2 + rulerSize * 2 + paperWidth;
@@ -584,11 +619,11 @@ function renderPatternChart(beadGrid: BeadGrid) {
     paperRight,
     paperBottom,
   );
-  drawPatternCells(context, beadGrid, cellSize, paperLeft, paperTop);
+  drawPatternCells(context, beadGrid, cellSize, paperLeft, paperTop, palette);
   drawPatternGrid(context, beadGrid.width, beadGrid.height, cellSize, paperLeft, paperTop);
 
   if (cellSize >= 12) {
-    drawPatternCellLabels(context, beadGrid, cellSize, paperLeft, paperTop);
+    drawPatternCellLabels(context, beadGrid, cellSize, paperLeft, paperTop, palette);
   }
 
   context.strokeStyle = "#8d806f";
@@ -598,17 +633,20 @@ function renderPatternChart(beadGrid: BeadGrid) {
   return canvas;
 }
 
-function renderFormalPatternChart(beadGrid: BeadGrid, name: string) {
+function renderFormalPatternChart(beadGrid: BeadGrid, name: string, palette: PaletteColor[]) {
   const maxSide = Math.max(beadGrid.width, beadGrid.height);
   const cellSize = clampNumber(
     Math.floor(EXPORT_DRAW_SIZE / Math.max(1, maxSide)),
     EXPORT_MIN_CELL_SIZE,
     EXPORT_MAX_CELL_SIZE,
   );
-  const rulerSize = cellSize >= 18 ? 40 : EXPORT_RULER_SIZE;
+  const rulerSize = Math.max(
+    getGridCoordinateMargin(beadGrid.width),
+    getGridCoordinateMargin(beadGrid.height),
+  );
   const paperWidth = beadGrid.width * cellSize;
   const paperHeight = beadGrid.height * cellSize;
-  const colorStats = buildColorStats(beadGrid);
+  const colorStats = buildColorStats(beadGrid, palette);
   const baseContentWidth = rulerSize * 2 + paperWidth;
   const infoWidth = Math.max(baseContentWidth, EXPORT_MIN_INFO_WIDTH);
   const legendColumns = getLegendColumnCount(infoWidth - 32, colorStats.length);
@@ -659,11 +697,11 @@ function renderFormalPatternChart(beadGrid: BeadGrid, name: string) {
     paperRight,
     paperBottom,
   );
-  drawPatternCells(context, beadGrid, cellSize, paperLeft, paperTop);
+  drawPatternCells(context, beadGrid, cellSize, paperLeft, paperTop, palette);
   drawPatternGrid(context, beadGrid.width, beadGrid.height, cellSize, paperLeft, paperTop);
 
   if (cellSize >= 12) {
-    drawPatternCellLabels(context, beadGrid, cellSize, paperLeft, paperTop);
+    drawPatternCellLabels(context, beadGrid, cellSize, paperLeft, paperTop, palette);
   }
 
   context.strokeStyle = "#8d806f";
@@ -742,16 +780,19 @@ function drawPatternRulers(
   context.textAlign = "center";
   context.textBaseline = "middle";
 
-  for (let x = 0; x < width; x += 1) {
-    const centerX = paperLeft + x * cellSize + cellSize / 2;
-    const label = String(x + 1);
+  const columnMarkers = getGridCoordinateMarkers(width, cellSize);
+  const rowMarkers = getGridCoordinateMarkers(height, cellSize);
+
+  for (const marker of columnMarkers) {
+    const centerX = paperLeft + marker.index * cellSize + cellSize / 2;
+    const label = String(marker.label);
     context.fillText(label, centerX, paperTop - rulerSize / 2);
     context.fillText(label, centerX, paperBottom + rulerSize / 2);
   }
 
-  for (let y = 0; y < height; y += 1) {
-    const centerY = paperTop + y * cellSize + cellSize / 2;
-    const label = String(y + 1);
+  for (const marker of rowMarkers) {
+    const centerY = paperTop + marker.index * cellSize + cellSize / 2;
+    const label = String(marker.label);
     context.fillText(label, paperLeft - rulerSize / 2, centerY);
     context.fillText(label, paperRight + rulerSize / 2, centerY);
   }
@@ -763,6 +804,7 @@ function drawPatternCells(
   cellSize: number,
   paperLeft: number,
   paperTop: number,
+  palette: PaletteColor[],
 ) {
   for (let y = 0; y < beadGrid.height; y += 1) {
     for (let x = 0; x < beadGrid.width; x += 1) {
@@ -771,7 +813,7 @@ function drawPatternCells(
         continue;
       }
 
-      const color = defaultPalette[colorIndex] ?? defaultPalette[0];
+      const color = palette[colorIndex] ?? palette[0];
       context.fillStyle = color.hex;
       context.fillRect(
         paperLeft + x * cellSize,
@@ -822,6 +864,7 @@ function drawPatternCellLabels(
   cellSize: number,
   paperLeft: number,
   paperTop: number,
+  palette: PaletteColor[],
 ) {
   context.textAlign = "center";
   context.textBaseline = "middle";
@@ -837,7 +880,7 @@ function drawPatternCellLabels(
         continue;
       }
 
-      const color = defaultPalette[colorIndex] ?? defaultPalette[0];
+      const color = palette[colorIndex] ?? palette[0];
       const label = color.id;
 
       context.fillStyle = getReadableTextColor(color.rgb);
@@ -1053,10 +1096,23 @@ function renderSourceToSampleSurface(options: {
   image: HTMLImageElement;
   imageTransform: ViewTransform;
 }) {
-  const maxGridSide = Math.max(options.canvas.width, options.canvas.height);
-  const scaleFactor = Math.max(2, Math.ceil(BASE_STAGE_SAMPLE_SIZE / Math.max(1, maxGridSide)));
-  const sampleWidth = Math.max(options.canvas.width * scaleFactor, options.canvas.width);
-  const sampleHeight = Math.max(options.canvas.height * scaleFactor, options.canvas.height);
+  // Match the reference worker's native-image sampling density while retaining
+  // this editor's canvas-aspect crop and positioning controls.
+  const nativeScaleFactor = Math.max(
+    options.image.width / options.canvas.width,
+    options.image.height / options.canvas.height,
+  );
+  const safeScaleFactor = Math.min(
+    nativeScaleFactor,
+    MAX_SAMPLE_BITMAP_SIDE / options.canvas.width,
+    MAX_SAMPLE_BITMAP_SIDE / options.canvas.height,
+    Math.sqrt(
+      MAX_SAMPLE_BITMAP_PIXELS / (options.canvas.width * options.canvas.height),
+    ),
+  );
+  const scaleFactor = Math.max(Number.EPSILON, safeScaleFactor);
+  const sampleWidth = Math.max(1, Math.round(options.canvas.width * scaleFactor));
+  const sampleHeight = Math.max(1, Math.round(options.canvas.height * scaleFactor));
   const offscreen = document.createElement("canvas");
   offscreen.width = sampleWidth;
   offscreen.height = sampleHeight;
@@ -1067,8 +1123,6 @@ function renderSourceToSampleSurface(options: {
   }
 
   context.clearRect(0, 0, offscreen.width, offscreen.height);
-  context.fillStyle = "#ffffff";
-  context.fillRect(0, 0, offscreen.width, offscreen.height);
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
 
@@ -1095,6 +1149,7 @@ export function replaceEdgeColor(
   beadGrid: BeadGrid | null,
   fromColorIndex: number,
   toColorIndex: number,
+  palette: PaletteColor[],
 ) {
   if (!beadGrid || fromColorIndex < 0 || toColorIndex < 0 || fromColorIndex === toColorIndex) {
     return beadGrid;
@@ -1103,7 +1158,7 @@ export function replaceEdgeColor(
   const nextCells = new Uint16Array(beadGrid.cells);
   let changed = false;
   const { width, height } = beadGrid;
-  const exteriorMask = buildExteriorEmptyMask(beadGrid);
+  const exteriorMask = buildExteriorEmptyMask(beadGrid, palette);
   const edgeBandMask = buildEdgeBandMask(beadGrid, exteriorMask, 2);
 
   for (let y = 0; y < height; y += 1) {
@@ -1135,11 +1190,11 @@ export function replaceEdgeColor(
   };
 }
 
-function buildExteriorEmptyMask(beadGrid: BeadGrid) {
+function buildExteriorEmptyMask(beadGrid: BeadGrid, palette: PaletteColor[]) {
   const { width, height, cells } = beadGrid;
   const mask = new Uint8Array(width * height);
   const queue: number[] = [];
-  const borderBackgroundColorIndex = findConnectedBorderBackgroundColor(beadGrid);
+  const borderBackgroundColorIndex = findConnectedBorderBackgroundColor(beadGrid, palette);
 
   function enqueue(index: number) {
     if (index < 0 || index >= cells.length || mask[index]) {
@@ -1318,16 +1373,14 @@ function sampleGridFromImageData(options: {
   for (let y = 0; y < canvas.height; y += 1) {
     for (let x = 0; x < canvas.width; x += 1) {
       const startX = Math.floor(x * cellWidth);
-      const endX = Math.max(startX + 1, Math.ceil((x + 1) * cellWidth));
+      const endX = Math.min(imageData.width, Math.ceil((x + 1) * cellWidth));
       const startY = Math.floor(y * cellHeight);
-      const endY = Math.max(startY + 1, Math.ceil((y + 1) * cellHeight));
+      const endY = Math.min(imageData.height, Math.ceil((y + 1) * cellHeight));
 
-      let alphaWeight = 0;
-      let weightedR = 0;
-      let weightedG = 0;
-      let weightedB = 0;
       let visiblePixelCount = 0;
-      const histogram = new Map<string, number>();
+      let dominantColor = 0;
+      let dominantCount = 0;
+      const histogram = new Map<number, number>();
 
       for (let sampleY = startY; sampleY < endY; sampleY += 1) {
         for (let sampleX = startX; sampleX < endX; sampleX += 1) {
@@ -1337,57 +1390,32 @@ function sampleGridFromImageData(options: {
             continue;
           }
 
-          const weight = alpha / 255;
           const r = imageData.data[offset];
           const g = imageData.data[offset + 1];
           const b = imageData.data[offset + 2];
-
-          alphaWeight += weight;
-          weightedR += r * weight;
-          weightedG += g * weight;
-          weightedB += b * weight;
           visiblePixelCount += 1;
-
-          const key = `${Math.round(r / 16)}-${Math.round(g / 16)}-${Math.round(b / 16)}`;
-          histogram.set(key, (histogram.get(key) ?? 0) + 1);
+          const packedColor = (r << 16) | (g << 8) | b;
+          const count = (histogram.get(packedColor) ?? 0) + 1;
+          histogram.set(packedColor, count);
+          if (count > dominantCount) {
+            dominantColor = packedColor;
+            dominantCount = count;
+          }
         }
       }
 
       const index = y * canvas.width + x;
 
-      if (visiblePixelCount === 0 || alphaWeight <= 0.12) {
+      if (visiblePixelCount === 0) {
         samples[index] = null;
         continue;
       }
 
-      const averageColor: [number, number, number] = [
-        weightedR / alphaWeight,
-        weightedG / alphaWeight,
-        weightedB / alphaWeight,
-      ];
-
-      const dominantBucket = Array.from(histogram.entries()).sort(
-        (left, right) => right[1] - left[1],
-      )[0];
-
-      if (dominantBucket && dominantBucket[1] / visiblePixelCount >= 0.52) {
-        const [bucketR, bucketG, bucketB] = dominantBucket[0]
-          .split("-")
-          .map((value) => Number(value) * 16 - 8);
-        samples[index] = {
-          r: clampChannel(averageColor[0] * 0.35 + bucketR * 0.65),
-          g: clampChannel(averageColor[1] * 0.35 + bucketG * 0.65),
-          b: clampChannel(averageColor[2] * 0.35 + bucketB * 0.65),
-          a: alphaWeight / visiblePixelCount,
-        };
-        continue;
-      }
-
       samples[index] = {
-        r: clampChannel(averageColor[0]),
-        g: clampChannel(averageColor[1]),
-        b: clampChannel(averageColor[2]),
-        a: alphaWeight / visiblePixelCount,
+        r: (dominantColor >> 16) & 255,
+        g: (dominantColor >> 8) & 255,
+        b: dominantColor & 255,
+        a: 1,
       };
     }
   }
@@ -1399,84 +1427,6 @@ function sampleGridFromImageData(options: {
   };
 }
 
-function stripConnectedNearWhiteBackground(sampledGrid: {
-  width: number;
-  height: number;
-  samples: Array<{ r: number; g: number; b: number; a: number } | null>;
-}) {
-  const { width, height, samples } = sampledGrid;
-  const backgroundMask = new Uint8Array(width * height);
-  const queue: number[] = [];
-
-  function enqueue(index: number) {
-    if (index < 0 || index >= samples.length || backgroundMask[index]) {
-      return;
-    }
-
-    const sample = samples[index];
-    if (!sample || !isEdgeConnectedWhiteSample(sample)) {
-      return;
-    }
-
-    backgroundMask[index] = 1;
-    queue.push(index);
-  }
-
-  for (let x = 0; x < width; x += 1) {
-    enqueue(x);
-    enqueue((height - 1) * width + x);
-  }
-
-  for (let y = 1; y < height - 1; y += 1) {
-    enqueue(y * width);
-    enqueue(y * width + (width - 1));
-  }
-
-  if (queue.length === 0) {
-    return sampledGrid;
-  }
-
-  while (queue.length > 0) {
-    const index = queue.shift()!;
-    const x = index % width;
-    const y = Math.floor(index / width);
-
-    if (x > 0) enqueue(index - 1);
-    if (x + 1 < width) enqueue(index + 1);
-    if (y > 0) enqueue(index - width);
-    if (y + 1 < height) enqueue(index + width);
-  }
-
-  const nextSamples = [...samples];
-  let changed = false;
-
-  for (let index = 0; index < nextSamples.length; index += 1) {
-    if (backgroundMask[index] === 1 && nextSamples[index] !== null) {
-      nextSamples[index] = null;
-      changed = true;
-    }
-  }
-
-  if (!changed) {
-    return sampledGrid;
-  }
-
-  return {
-    width,
-    height,
-    samples: nextSamples,
-  };
-}
-
-function isEdgeConnectedWhiteSample(sample: { r: number; g: number; b: number; a: number }) {
-  const maxChannel = Math.max(sample.r, sample.g, sample.b);
-  const minChannel = Math.min(sample.r, sample.g, sample.b);
-  const luma = (sample.r + sample.g + sample.b) / 3;
-  const chroma = maxChannel - minChannel;
-
-  return luma >= EDGE_CONNECTED_WHITE_LUMA_MIN && chroma <= EDGE_CONNECTED_WHITE_CHROMA_MAX;
-}
-
 function quantizeNearest(
   sampledGrid: {
     width: number;
@@ -1484,8 +1434,11 @@ function quantizeNearest(
     samples: Array<{ r: number; g: number; b: number; a: number } | null>;
   },
   enabledPaletteIndices: number[],
+  palette: PaletteColor[],
 ): BeadGrid {
   const cells = new Uint16Array(sampledGrid.width * sampledGrid.height);
+  const paletteOklab = palette.map((color) => rgbToOklab(color.rgb));
+  const nearestColorCache = new Map<number, number>();
 
   for (let index = 0; index < sampledGrid.samples.length; index += 1) {
     const sample = sampledGrid.samples[index];
@@ -1494,7 +1447,22 @@ function quantizeNearest(
       continue;
     }
 
-    cells[index] = findNearestPaletteIndex(sample.r, sample.g, sample.b, enabledPaletteIndices);
+    const packedColor = (sample.r << 16) | (sample.g << 8) | sample.b;
+    const cachedIndex = nearestColorCache.get(packedColor);
+    if (cachedIndex !== undefined) {
+      cells[index] = cachedIndex;
+      continue;
+    }
+
+    const colorIndex = findNearestPaletteIndex(
+      sample.r,
+      sample.g,
+      sample.b,
+      enabledPaletteIndices,
+      paletteOklab,
+    );
+    nearestColorCache.set(packedColor, colorIndex);
+    cells[index] = colorIndex;
   }
 
   return {
@@ -1504,10 +1472,70 @@ function quantizeNearest(
   };
 }
 
+function mergeNearDuplicatePaletteColors(
+  beadGrid: BeadGrid,
+  enabledPaletteIndices: number[],
+  palette: PaletteColor[],
+) {
+  const usageCounts = new Map<number, number>();
+  for (const colorIndex of beadGrid.cells) {
+    if (colorIndex !== EMPTY_CELL) {
+      usageCounts.set(colorIndex, (usageCounts.get(colorIndex) ?? 0) + 1);
+    }
+  }
+
+  const usedIndices = Array.from(usageCounts.keys()).sort(
+    (left, right) => (usageCounts.get(right) ?? 0) - (usageCounts.get(left) ?? 0),
+  );
+  const enabledSet = new Set(enabledPaletteIndices);
+  const paletteOklab = palette.map((color) => rgbToOklab(color.rgb));
+  const replacement = new Map<number, number>();
+  const removed = new Set<number>();
+
+  for (let leftPosition = 0; leftPosition < usedIndices.length; leftPosition += 1) {
+    const targetIndex = usedIndices[leftPosition];
+    if (removed.has(targetIndex) || !enabledSet.has(targetIndex)) {
+      continue;
+    }
+
+    for (
+      let rightPosition = leftPosition + 1;
+      rightPosition < usedIndices.length;
+      rightPosition += 1
+    ) {
+      const sourceIndex = usedIndices[rightPosition];
+      if (removed.has(sourceIndex) || !enabledSet.has(sourceIndex)) {
+        continue;
+      }
+
+      if (
+        oklabDistance(paletteOklab[targetIndex], paletteOklab[sourceIndex]) <
+        NEAR_DUPLICATE_DELTA_E
+      ) {
+        removed.add(sourceIndex);
+        replacement.set(sourceIndex, targetIndex);
+      }
+    }
+  }
+
+  if (replacement.size === 0) {
+    return beadGrid;
+  }
+
+  const cells = new Uint16Array(beadGrid.cells);
+  for (let index = 0; index < cells.length; index += 1) {
+    cells[index] = replacement.get(cells[index]) ?? cells[index];
+  }
+
+  return { ...beadGrid, cells };
+}
+
 function reducePaletteColorsBySimilarity(
   usageCounts: Map<number, number>,
   targetColorCount: number,
+  palette: PaletteColor[],
 ) {
+  const paletteLab = palette.map((color) => rgbToLab(color.rgb));
   const clusters: PaletteCluster[] = Array.from(usageCounts.entries())
     .map(([representativeIndex, count]) => ({
       representativeIndex,
@@ -1531,8 +1559,8 @@ function reducePaletteColorsBySimilarity(
         const leftCluster = clusters[leftPosition];
         const rightCluster = clusters[rightPosition];
         const distance = labDistanceSquared(
-          defaultPaletteLab[leftCluster.representativeIndex],
-          defaultPaletteLab[rightCluster.representativeIndex],
+          paletteLab[leftCluster.representativeIndex],
+          paletteLab[rightCluster.representativeIndex],
         );
         const combinedCount = leftCluster.count + rightCluster.count;
         const pairOrder: [number, number] = [
@@ -1632,16 +1660,14 @@ function findNearestPaletteIndex(
   green: number,
   blue: number,
   enabledPaletteIndices: number[],
+  paletteOklab: OklabColor[],
 ) {
+  const sampleOklab = rgbToOklab([red, green, blue]);
   let bestIndex = enabledPaletteIndices[0];
   let bestDistance = Number.POSITIVE_INFINITY;
 
   for (const index of enabledPaletteIndices) {
-    const paletteColor = defaultPalette[index];
-    const deltaR = red - paletteColor.rgb[0];
-    const deltaG = green - paletteColor.rgb[1];
-    const deltaB = blue - paletteColor.rgb[2];
-    const distance = deltaR * deltaR + deltaG * deltaG + deltaB * deltaB;
+    const distance = oklabDistanceSquared(sampleOklab, paletteOklab[index]);
 
     if (distance < bestDistance) {
       bestDistance = distance;
@@ -1652,8 +1678,51 @@ function findNearestPaletteIndex(
   return bestIndex;
 }
 
-function clampChannel(value: number) {
-  return Math.min(255, Math.max(0, Math.round(value)));
+function rgbToOklab(rgb: [number, number, number]): OklabColor {
+  const [red, green, blue] = rgb.map(srgbChannelToLinear);
+  const x = 0.4122214708 * red + 0.5363325363 * green + 0.0514459929 * blue;
+  const y = 0.2119034982 * red + 0.6806995451 * green + 0.1073969566 * blue;
+  const z = 0.0883024619 * red + 0.2817188376 * green + 0.6299787005 * blue;
+  const cubeRootX = Math.cbrt(x);
+  const cubeRootY = Math.cbrt(y);
+  const cubeRootZ = Math.cbrt(z);
+
+  return {
+    lightness:
+      0.2104542553 * cubeRootX +
+      0.793617785 * cubeRootY -
+      0.0040720468 * cubeRootZ,
+    greenRed:
+      1.9779984951 * cubeRootX -
+      2.428592205 * cubeRootY +
+      0.4505937099 * cubeRootZ,
+    blueYellow:
+      0.0259040371 * cubeRootX +
+      0.7827717662 * cubeRootY -
+      0.808675766 * cubeRootZ,
+  };
+}
+
+function srgbChannelToLinear(channel: number) {
+  const normalized = channel / 255;
+  return normalized <= 0.04045
+    ? normalized / 12.92
+    : Math.pow((normalized + 0.055) / 1.055, 2.4);
+}
+
+function oklabDistanceSquared(left: OklabColor, right: OklabColor) {
+  const deltaLightness = left.lightness - right.lightness;
+  const deltaGreenRed = left.greenRed - right.greenRed;
+  const deltaBlueYellow = left.blueYellow - right.blueYellow;
+  return (
+    deltaLightness * deltaLightness +
+    deltaGreenRed * deltaGreenRed +
+    deltaBlueYellow * deltaBlueYellow
+  );
+}
+
+function oklabDistance(left: OklabColor, right: OklabColor) {
+  return Math.sqrt(oklabDistanceSquared(left, right)) * 100;
 }
 
 function clampNumber(value: number, min: number, max: number) {

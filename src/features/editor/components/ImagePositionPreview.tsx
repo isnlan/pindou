@@ -4,9 +4,9 @@ import type {
   CanvasSize,
   SourceImage,
   ViewTransform,
+  PaletteColor,
 } from "../../../shared/types/project";
 import { EMPTY_CELL } from "../../../shared/types/project";
-import { defaultPalette } from "../../palette/palette";
 
 type ImagePositionPreviewProps = {
   canvas: CanvasSize;
@@ -14,6 +14,7 @@ type ImagePositionPreviewProps = {
   onImageTransformChange: (transform: Partial<ViewTransform>) => void;
   previewGrid: BeadGrid | null;
   previewMode: "generated" | "source";
+  palette: PaletteColor[];
   sourceImage: SourceImage | null;
   themeKey?: string;
 };
@@ -28,6 +29,7 @@ export function ImagePositionPreview({
   onImageTransformChange,
   previewGrid,
   previewMode,
+  palette,
   sourceImage,
   themeKey,
 }: ImagePositionPreviewProps) {
@@ -74,7 +76,7 @@ export function ImagePositionPreview({
 
   useEffect(() => {
     drawPreview();
-  }, [canvas.height, canvas.width, imageTransform, previewGrid, previewMode, themeKey]);
+  }, [canvas.height, canvas.width, imageTransform, palette, previewGrid, previewMode, themeKey]);
 
   useEffect(() => {
     const node = wrapperRef.current;
@@ -137,7 +139,7 @@ export function ImagePositionPreview({
     context.fillRect(boardLeft, boardTop, boardWidth, boardHeight);
 
     if (previewMode === "generated" && previewGrid) {
-      drawGeneratedPreview(context, previewGrid, boardLeft, boardTop, boardWidth, boardHeight);
+      drawGeneratedPreview(context, previewGrid, boardLeft, boardTop, boardWidth, boardHeight, palette);
     } else if (imageRef.current) {
       const image = imageRef.current;
       const baseScale = Math.min(boardWidth / image.width, boardHeight / image.height);
@@ -327,6 +329,7 @@ function drawGeneratedPreview(
   boardTop: number,
   boardWidth: number,
   boardHeight: number,
+  palette: PaletteColor[],
 ) {
   const cellWidth = boardWidth / beadGrid.width;
   const cellHeight = boardHeight / beadGrid.height;
@@ -338,7 +341,7 @@ function drawGeneratedPreview(
         continue;
       }
 
-      const color = defaultPalette[colorIndex] ?? defaultPalette[0];
+      const color = palette[colorIndex] ?? palette[0];
       context.fillStyle = color.hex;
       context.fillRect(
         boardLeft + x * cellWidth,
