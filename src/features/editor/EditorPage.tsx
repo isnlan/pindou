@@ -1607,7 +1607,7 @@ function ProjectInfoModal({
             <img
               alt="拼豆社群二维码"
               className="modal-sheet__qrcode"
-              src="/wxcode.jpg"
+              src="/wxcode.png"
             />
           </div>
         </div>
