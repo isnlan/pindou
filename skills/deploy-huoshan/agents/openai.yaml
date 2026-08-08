@@ -1,4 +1,4 @@
 interface:
   display_name: "Deploy to Huoshan"
-  short_description: "部署拼豆工坊到火山引擎云服务器huoshan的全流程"
-  default_prompt: "请帮我将拼豆工坊部署到huoshan服务器"
+  short_description: "部署拼豆工坊到火山服务器并验证容器、页面与静态资源一致性"
+  default_prompt: "使用 $deploy-huoshan 将拼豆工坊部署到 huoshan，并验证线上静态资源。"
